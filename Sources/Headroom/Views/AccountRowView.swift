@@ -137,7 +137,10 @@ private struct WindowLine: View {
             Text("\(Int(window.percent))%")
                 .font(.system(size: 10, weight: .semibold).monospacedDigit())
                 .foregroundStyle(window.percent >= 80 ? color : .primary)
-                .frame(width: 30, alignment: .trailing)
+                .lineLimit(1)
+                // "100%" measures 30.1 pt at this size, so a 30 pt column wrapped
+                // it onto two lines — at exactly the moment the number matters most.
+                .frame(width: 36, alignment: .trailing)
 
             if let resetsAt = window.resetsAt {
                 Text(ResetFormatter.string(for: resetsAt))
