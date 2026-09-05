@@ -104,6 +104,12 @@ or start refusing this at any time. Use it accordingly.
 It reads usage only. It never sends prompts, never spends any limit, and stores
 nothing beyond the tokens it needs and a few preferences.
 
+## How this was built
+
+Vibe coded with Claude Code, start to finish. I would never have sat down and
+written a macOS menu bar app by hand, so thanks to AI for making a tool like
+this something I can simply have.
+
 ## Credits
 
 The shape of both providers' APIs and the OAuth flows were worked out with help
