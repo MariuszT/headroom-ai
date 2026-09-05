@@ -66,6 +66,29 @@ the subscription organisation reports these limits; a token issued for an API
 organisation is refused with `oauth_not_allowed_for_organization`. The app says
 which organisation it got, and whether that login has a subscription at all.
 
+## Releasing a signed build
+
+`make app` signs ad hoc, which is fine on the machine that built it and
+refused as "unidentified developer" everywhere else. A build other people can
+open has to be signed with a Developer ID certificate and notarised by Apple.
+
+Store the notarisation credentials once — the password is an app-specific one
+from appleid.apple.com, not your Apple ID password:
+
+    xcrun notarytool store-credentials headroom-notary \
+      --apple-id <your-apple-id> --team-id <your-team-id> --password <app-specific-password>
+
+Then:
+
+    make release
+
+That builds, signs with the hardened runtime and a secure timestamp, packages a
+DMG, submits it for notarisation, waits, staples the ticket to the DMG and
+verifies the result. Stapling is what lets the first launch work without a
+network connection.
+
+Set `TEAM_ID` and `SIGN_ID` in the Makefile to your own certificate.
+
 ## Launch at login
 
 System Settings → General → Login Items → add `Headroom AI.app`.
