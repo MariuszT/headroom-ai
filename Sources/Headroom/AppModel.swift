@@ -51,11 +51,13 @@ final class AppModel {
     private var loginTask: Task<Void, Never>?
 
     init() {
-        _ = try? StoreMigration.run(
-            from: AccountStore.legacyDirectory,
-            to: AccountStore.defaultDirectory
-        )
-        preferences.migrate()
+        if !DemoData.isEnabled {
+            _ = try? StoreMigration.run(
+                from: AccountStore.legacyDirectory,
+                to: AccountStore.defaultDirectory
+            )
+            preferences.migrate()
+        }
         poller = Poller(
             store: store,
             providers: [
@@ -67,6 +69,14 @@ final class AppModel {
                 .openai: OpenAIOAuth(),
             ]
         )
+        // Demo mode neither reads nor writes the store and never polls, so a
+        // screenshot session cannot touch real accounts.
+        if DemoData.isEnabled {
+            accounts = DemoData.accounts
+            usage = DemoData.usage
+            return
+        }
+
         loadAccounts()
         startLoop()
     }

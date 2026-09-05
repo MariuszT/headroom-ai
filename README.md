@@ -8,7 +8,7 @@ It exists because both CLIs only ever show the account you happen to be logged
 into. With a dozen subscriptions, finding a usable one means switching accounts
 and checking, over and over.
 
-<!-- A screenshot belongs here. -->
+![The panel with nine accounts connected](Screenshots/panel.png)
 
 ## What it shows
 
@@ -28,6 +28,17 @@ choose in Settings:
 | Accounts with room | How many are still under 80% |
 
 Whichever you pick, the icon fills the same way: full means nothing left.
+
+## A populated window to look at
+
+Running with `HEADROOM_DEMO=1` fills the panel with nine invented accounts
+covering every state it can be in — fresh, busy, over the amber line,
+exhausted, signed out and stale. It neither reads nor writes the account store
+and never polls, so it cannot disturb real accounts. This is how the
+screenshot above was taken.
+
+    make app
+    HEADROOM_DEMO=1 ".build/Headroom AI.app/Contents/MacOS/Headroom"
 
 ## Requirements
 
