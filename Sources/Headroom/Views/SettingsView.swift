@@ -39,6 +39,24 @@ struct SettingsView: View {
             Toggle("Show the number next to the icon", isOn: $model.showsPercentInMenuBar)
 
             VStack(alignment: .leading, spacing: 4) {
+                // The real state lives in the system, so the binding asks the
+                // model rather than holding its own copy: macOS can refuse the
+                // change, or park it awaiting approval, and the switch has to
+                // end up showing what actually happened.
+                Toggle("Open at login", isOn: Binding(
+                    get: { model.launchesAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
+
+                if let problem = model.launchAtLoginProblem {
+                    Text(problem)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Check every \(Int(model.intervalSeconds / 60)) min")
                 Slider(value: $model.intervalSeconds, in: 180...1800, step: 60)
                 Text("Anthropic rejects checks more often than every 3 minutes per account.")

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Observation
+import ServiceManagement
 import HeadroomCore
 
 @Observable
@@ -38,6 +39,38 @@ final class AppModel {
         }
     }
 
+    /// Whether macOS starts the app at login. The real state lives in the
+    /// system, not here, so this mirrors it and is re-read after every change
+    /// rather than assumed: registration can fail, and it can also land in
+    /// `.requiresApproval` when the user has switched the item off in System
+    /// Settings, which is not a failure but is not "on" either.
+    private(set) var launchesAtLogin = SMAppService.mainApp.status == .enabled
+    /// Set when the system refused the last change, so the panel can say so
+    /// instead of quietly flipping the switch back.
+    private(set) var launchAtLoginProblem: String?
+
+    func setLaunchAtLogin(_ wanted: Bool) {
+        do {
+            if wanted {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginProblem = nil
+        } catch {
+            launchAtLoginProblem = wanted
+                ? "macOS refused to add this as a login item. Check Login Items in System Settings."
+                : "macOS refused to remove this login item. Check Login Items in System Settings."
+        }
+        // Trust the system over what we asked for.
+        launchesAtLogin = SMAppService.mainApp.status == .enabled
+        if launchesAtLogin != wanted, launchAtLoginProblem == nil {
+            launchAtLoginProblem = SMAppService.mainApp.status == .requiresApproval
+                ? "Waiting for approval in System Settings, under Login Items."
+                : nil
+        }
+    }
+
     private let preferences = Preferences()
     private let store = AccountStore.default
     private let poller: Poller
@@ -51,13 +84,11 @@ final class AppModel {
     private var loginTask: Task<Void, Never>?
 
     init() {
-        if !DemoData.isEnabled {
-            _ = try? StoreMigration.run(
-                from: AccountStore.legacyDirectory,
-                to: AccountStore.defaultDirectory
-            )
-            preferences.migrate()
-        }
+        _ = try? StoreMigration.run(
+            from: AccountStore.legacyDirectory,
+            to: AccountStore.defaultDirectory
+        )
+        preferences.migrate()
         poller = Poller(
             store: store,
             providers: [
@@ -69,14 +100,6 @@ final class AppModel {
                 .openai: OpenAIOAuth(),
             ]
         )
-        // Demo mode neither reads nor writes the store and never polls, so a
-        // screenshot session cannot touch real accounts.
-        if DemoData.isEnabled {
-            accounts = DemoData.accounts
-            usage = DemoData.usage
-            return
-        }
-
         loadAccounts()
         startLoop()
     }
