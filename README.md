@@ -87,10 +87,12 @@ Then:
 
     make release
 
-That builds, signs with the hardened runtime and a secure timestamp, packages a
-DMG, submits it for notarisation, waits, staples the ticket to the DMG and
-verifies the result. Stapling is what lets the first launch work without a
-network connection.
+That builds and signs with the hardened runtime and a secure timestamp, then
+notarises twice: once for the app, whose ticket is stapled into the bundle, and
+once for the signed DMG built around it. Both tickets matter — the DMG's is
+checked when the disk image is opened, the app's when the copy dragged out of it
+is launched, and stapling is what lets either happen without a network
+connection.
 
 Set `TEAM_ID` and `SIGN_ID` in the Makefile to your own certificate.
 
