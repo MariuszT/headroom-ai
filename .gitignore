@@ -3,3 +3,4 @@
 *.xcuserdatastate
 DerivedData/
 .superpowers/
+.DS_Store

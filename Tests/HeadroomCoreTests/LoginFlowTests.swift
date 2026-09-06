@@ -2,13 +2,6 @@ import Testing
 import Foundation
 @testable import HeadroomCore
 
-private func temporaryLoginDirectory() throws -> URL {
-    let url = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
-}
-
 private struct StubOAuth: OAuthProvider {
     let port: UInt16
     var accessToken: String = "a"
@@ -31,8 +24,7 @@ private struct StubOAuth: OAuthProvider {
 // Anthropic identity comes from a separate profile call, so we substitute it
 // through `profileFactory` rather than hitting the real API from a unit test.
 @Test func anAnthropicSignInStoresTheAccountFromTheProfileData() async throws {
-    let directory = try temporaryLoginDirectory()
-    let store = AccountStore(directory: directory)
+    let store = AccountStore(secrets: InMemorySecretStore())
 
     // The browser is replaced by a request straight to the redirect address.
     let flow = LoginFlow(store: store) { url in
@@ -55,7 +47,7 @@ private struct StubOAuth: OAuthProvider {
 /// second sign-in cannot help but land on the same identity — it overwrites the
 /// first with fresh tokens.
 @Test func signingInTheSameAccountTwiceStoresOneEntryWithFreshTokens() async throws {
-    let store = AccountStore(directory: try temporaryLoginDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let flow = LoginFlow(store: store) { url in
         Task { _ = try? await URLSession.shared.data(from: url) }
     }
@@ -78,8 +70,7 @@ private struct StubOAuth: OAuthProvider {
 }
 
 @Test func aProfileFailureStoresNoAccountWithAnInventedIdentity() async throws {
-    let directory = try temporaryLoginDirectory()
-    let store = AccountStore(directory: directory)
+    let store = AccountStore(secrets: InMemorySecretStore())
     let flow = LoginFlow(store: store) { url in
         Task { _ = try? await URLSession.shared.data(from: url) }
     }
@@ -104,7 +95,7 @@ private struct StubOAuth: OAuthProvider {
     _ = try blocker.start(expectedState: "x", expectedPath: "/auth/callback")
     defer { blocker.stop() }
 
-    let store = AccountStore(directory: try temporaryLoginDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let flow = LoginFlow(store: store) { _ in }
 
     await #expect(throws: OAuthError.portInUse(HeadroomConstants.openAIPort)) {
@@ -124,7 +115,7 @@ private struct StubOAuth: OAuthProvider {
 // deterministic.
 
 @Test func aCodexIdentityWithoutAnEmailInTheIdTokenThrows() async throws {
-    let flow = LoginFlow(store: AccountStore(directory: try temporaryLoginDirectory())) { _ in }
+    let flow = LoginFlow(store: AccountStore(secrets: InMemorySecretStore())) { _ in }
     let payload = Data(#"""
     {"https://api.openai.com/auth":{"chatgpt_account_id":"acc-1"}}
     """#.utf8).base64URLEncoded
@@ -138,7 +129,7 @@ private struct StubOAuth: OAuthProvider {
 }
 
 @Test func aCodexIdentityWithoutAnAccountIdInTheIdTokenThrows() async throws {
-    let flow = LoginFlow(store: AccountStore(directory: try temporaryLoginDirectory())) { _ in }
+    let flow = LoginFlow(store: AccountStore(secrets: InMemorySecretStore())) { _ in }
     let payload = Data(#"{"email":"someone@account.pl"}"#.utf8).base64URLEncoded
     let tokens = Tokens(accessToken: "a", refreshToken: "r", expiresAt: Date(), idToken: "h.\(payload).s")
 
@@ -150,7 +141,7 @@ private struct StubOAuth: OAuthProvider {
 }
 
 @Test func aCodexIdentityWithNoIdTokenAtAllThrows() async throws {
-    let flow = LoginFlow(store: AccountStore(directory: try temporaryLoginDirectory())) { _ in }
+    let flow = LoginFlow(store: AccountStore(secrets: InMemorySecretStore())) { _ in }
     let tokens = Tokens(accessToken: "a", refreshToken: "r", expiresAt: Date(), idToken: nil)
 
     await #expect(throws: OAuthError.incompleteCodexIdentity) {
@@ -209,7 +200,7 @@ private func withTestTimeout<T: Sendable>(
 // listens on any free port assigned by the system, so the test does not depend
 // on Codex's port 1455 happening to be free.
 @Test func cancellingASignInReleasesTheListeningPort() async throws {
-    let store = AccountStore(directory: try temporaryLoginDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let signal = PortSignal()
 
     let flow = LoginFlow(store: store) { _ in
@@ -254,7 +245,7 @@ private func withTestTimeout<T: Sendable>(
 }
 
 @Test func aCompleteCodexIdTokenYieldsTheFullIdentity() async throws {
-    let flow = LoginFlow(store: AccountStore(directory: try temporaryLoginDirectory())) { _ in }
+    let flow = LoginFlow(store: AccountStore(secrets: InMemorySecretStore())) { _ in }
     let payload = Data(#"""
     {"email":"complete@account.pl","https://api.openai.com/auth":{"chatgpt_account_id":"acc-9","chatgpt_plan_type":"pro"}}
     """#.utf8).base64URLEncoded

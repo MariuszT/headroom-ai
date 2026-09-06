@@ -103,19 +103,14 @@ struct AccountRowView: View {
     private var windows: [LimitWindow] {
         guard !account.needsReauth, let usage else { return [] }
         if case .error = usage.staleness { return [] }
-        return [usage.session, usage.weekly] + usage.scoped
+        return usage.windows
     }
 
     /// One sentence, and only when it adds something the lines above do not
-    /// already say.
+    /// already say. See `AccountNote` — the branches live in the core so they
+    /// can be tested without a running app.
     private var note: String? {
-        if account.needsReauth { return "Rejected by Anthropic. Add this account again to renew it." }
-        guard let usage else { return "Waiting for the first check." }
-        if case .error(let description) = usage.staleness { return description }
-        if case .cached(let since) = usage.staleness {
-            return "Last checked \(ResetFormatter.stringSince(since))."
-        }
-        return nil
+        AccountNote.text(for: account, usage: usage)
     }
 }
 

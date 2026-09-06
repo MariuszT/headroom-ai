@@ -1,6 +1,6 @@
 import Foundation
 
-/// The two user settings, kept in `UserDefaults`. The keys were renamed along
+/// The user's settings, kept in `UserDefaults`. The oldest keys were renamed along
 /// with the app; every read reaches for the new key first and falls back to the
 /// old one only when it is missing. That way correctness does NOT depend on the
 /// order in which something reads these settings relative to `migrate()` —
@@ -18,6 +18,12 @@ public struct Preferences {
     private static let refreshIntervalOldKey = "interwal"
     private static let menuBarMetricKey = "menuBarMetric"
     private static let dismissedUpdateKey = "dismissedUpdateVersion"
+    private static let sectionOrderKey = "sectionOrder"
+
+    // Per-provider, so that one section's arrangement says nothing about the
+    // other's — which is the whole reason the control sits in each header.
+    private static func sortModeKey(_ provider: Provider) -> String { "sortMode.\(provider.rawValue)" }
+    private static func manualOrderKey(_ provider: Provider) -> String { "manualOrder.\(provider.rawValue)" }
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -50,6 +56,36 @@ public struct Preferences {
     public var dismissedUpdateVersion: String? {
         get { defaults.string(forKey: Self.dismissedUpdateKey) }
         nonmutating set { defaults.set(newValue, forKey: Self.dismissedUpdateKey) }
+    }
+
+    /// How one section arranges its accounts. An unrecognised stored value
+    /// falls back to the default rather than failing — the set of modes may
+    /// grow or shrink between versions.
+    public func sortMode(for provider: Provider) -> SortMode {
+        defaults.string(forKey: Self.sortModeKey(provider))
+            .flatMap(SortMode.init(rawValue:)) ?? .alphabetical
+    }
+
+    public func setSortMode(_ mode: SortMode, for provider: Provider) {
+        defaults.set(mode.rawValue, forKey: Self.sortModeKey(provider))
+    }
+
+    /// The account ids of one section, in the order they were dragged into.
+    /// Anything stored under that key that is not a list of strings is not an
+    /// order, and reads as none.
+    public func manualOrder(for provider: Provider) -> [String] {
+        defaults.stringArray(forKey: Self.manualOrderKey(provider)) ?? []
+    }
+
+    public func setManualOrder(_ order: [String], for provider: Provider) {
+        defaults.set(order, forKey: Self.manualOrderKey(provider))
+    }
+
+    /// The providers, in the order their sections are shown. Empty until the
+    /// user drags one — see `AccountOrdering.sections`, which fills the gaps.
+    public var sectionOrder: [String] {
+        get { defaults.stringArray(forKey: Self.sectionOrderKey) ?? [] }
+        nonmutating set { defaults.set(newValue, forKey: Self.sectionOrderKey) }
     }
 
     /// The slider in Settings is limited to 180...1800, and the same clamp

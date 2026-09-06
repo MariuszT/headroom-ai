@@ -84,11 +84,9 @@ public struct MenuBarReading: Equatable, Sendable, Identifiable {
             let ids = accounts.filter { $0.provider == provider }.map(\.id)
             guard !ids.isEmpty else { return nil }
 
-            let known = ids.compactMap { id -> Double? in
-                guard let accountUsage = usage[id] else { return nil }
-                if case .error = accountUsage.staleness { return nil }
-                return accountUsage.worstPercent
-            }
+            // See `AccountUsage.knownPercent` — the same rule the panel's
+            // "fullest first" order uses.
+            let known = ids.compactMap { usage[$0]?.knownPercent }
 
             switch metric {
             case .bestAccount:

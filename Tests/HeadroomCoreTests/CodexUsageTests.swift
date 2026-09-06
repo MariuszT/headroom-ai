@@ -9,14 +9,14 @@ private func codexFixture() throws -> Data {
 
 @Test func parsesBothCodexWindows() throws {
     let result = try CodexUsage.parse(codexFixture(), fetchedAt: Date())
-    #expect(result.usage.session.percent == 100)
-    #expect(result.usage.weekly.percent == 16)
+    #expect(result.usage.session?.percent == 100)
+    #expect(result.usage.weekly?.percent == 16)
     #expect(result.usage.scoped.isEmpty)
 }
 
 @Test func convertsTheEpochToADate() throws {
     let result = try CodexUsage.parse(codexFixture(), fetchedAt: Date())
-    #expect(result.usage.session.resetsAt == Date(timeIntervalSince1970: 1_788_548_409))
+    #expect(result.usage.session?.resetsAt == Date(timeIntervalSince1970: 1_788_548_409))
 }
 
 @Test func extractsTheEmailAndPlan() throws {
@@ -25,8 +25,12 @@ private func codexFixture() throws -> Data {
     #expect(result.plan == "team")
 }
 
-@Test func aMissingRateLimitSectionGivesEmptyWindows() throws {
+/// See `anEmptyResponseGivesNoWindowsAtAll` — an absent window is absent, not
+/// a window sitting at zero.
+@Test func aMissingRateLimitSectionGivesNoWindowsAtAll() throws {
     let result = try CodexUsage.parse(Data(#"{"email":"a@b.pl"}"#.utf8), fetchedAt: Date())
-    #expect(result.usage.session.percent == 0)
-    #expect(result.usage.weekly.resetsAt == nil)
+    #expect(result.usage.session == nil)
+    #expect(result.usage.weekly == nil)
+    #expect(result.usage.windows.isEmpty)
+    #expect(result.usage.knownPercent == nil)
 }

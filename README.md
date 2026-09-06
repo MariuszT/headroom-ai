@@ -53,9 +53,10 @@ Adding a **Codex** account needs port 1455 free, because that is the only
 redirect address OpenAI accepts for this flow. It cannot run while
 `codex login` is waiting.
 
-Tokens are stored in `~/Library/Application Support/Headroom/accounts.json`
-with `0600` permissions and refreshed automatically, so you sign in once per
-account.
+Tokens are stored in your login keychain, under `pl.tarnaski.headroom`, and
+refreshed automatically, so you sign in once per account. Earlier versions kept
+them in a file; that file is imported into the keychain and deleted on first
+launch.
 
 ## Settings
 

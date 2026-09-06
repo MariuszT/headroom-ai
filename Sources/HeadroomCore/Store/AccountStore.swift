@@ -1,101 +1,145 @@
 import Foundation
 
-/// Accounts live in a plain file with 0600 permissions rather than in the
-/// keychain, because the app is signed ad hoc — the signature changes on every
-/// rebuild and would invalidate the access list of a keychain entry.
+/// Every account, as one JSON document in one `SecretStore` slot.
+///
+/// The store knows nothing about where that slot lives: the app puts it in the
+/// login keychain, the tests in memory. Keeping the whole list in a single slot
+/// rather than one per account is what makes `upsert` and `remove` a plain
+/// read-modify-write, with no partially written set of accounts to reconcile.
 public struct AccountStore: Sendable {
-    public let fileURL: URL
-    private let directory: URL
+    private let secrets: any SecretStore
 
-    public init(directory: URL) {
-        self.directory = directory
-        self.fileURL = directory.appendingPathComponent("accounts.json")
+    public init(secrets: any SecretStore) {
+        self.secrets = secrets
     }
 
     public static var `default`: AccountStore {
-        AccountStore(directory: Self.defaultDirectory)
-    }
-
-    public static var defaultDirectory: URL {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Headroom")
-    }
-
-    /// The directory of the app's previous name — source of a one-off migration.
-    public static var legacyDirectory: URL {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Limity")
+        AccountStore(secrets: KeychainSecretStore.default)
     }
 
     public func load() throws -> [Account] {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-        let data = try Data(contentsOf: fileURL)
-        guard !data.isEmpty else { return [] }
+        // An empty slot is an empty list. Anything else that fails to decode is
+        // a genuine error and is thrown: reporting zero accounts for damaged
+        // data would invite the next write to overwrite it for good.
+        guard let data = try secrets.read(), !data.isEmpty else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
         return try decoder.decode([Account].self, from: data)
     }
 
+    /// Serialises every read-modify-write below.
+    ///
+    /// The store is written from three places that know nothing of each other:
+    /// `Poller` (an actor) rotating tokens, `LoginFlow` storing a fresh sign-in
+    /// from its own task, and `AppModel.remove` on the main actor. Each reads
+    /// the whole document, changes one account and writes it back, so without
+    /// this the loser's write is simply dropped — a just-added account
+    /// disappears, or a rotated refresh token is lost, and at Anthropic the
+    /// previous one is already dead on the server, so that account then needs
+    /// signing in again.
+    ///
+    /// Static because the slot is what is being guarded, not the value that
+    /// addresses it: `AccountStore.default` builds a new instance on every
+    /// access, and they all name the same keychain item.
+    private static let lock = NSLock()
+
     public func save(_ accounts: [Account]) throws {
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
+        try Self.lock.withLock { try write(accounts) }
+    }
+
+    /// The write itself, with no lock of its own — the mutators below already
+    /// hold it across their read and their write, and `NSLock` is not
+    /// recursive.
+    private func write(_ accounts: [Account]) throws {
+        // The last account leaving clears the slot rather than storing "[]", so
+        // the tokens' hiding place does not outlive the tokens.
+        guard !accounts.isEmpty else {
+            try secrets.delete()
+            return
+        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(accounts)
+        try secrets.write(try encoder.encode(accounts))
+    }
 
-        // Atomic write: an interruption halfway through must not leave a file
-        // from which no account can be read any more.
-        //
-        // `replaceItemAt` requires the destination to exist already, so we check
-        // whether accounts.json is in place and only then choose between
-        // replaceItemAt and moveItem. Permissions of 0600 are set on the
-        // temporary file BEFORE the move (so tokens never sit, even briefly,
-        // with the default 0644) and again on the destination afterwards,
-        // because replaceItemAt does not carry the temporary file's attributes
-        // across.
-        let temporary = directory.appendingPathComponent(".accounts.\(UUID().uuidString).tmp")
-        // If anything below throws, the temporary file — which holds tokens —
-        // must not be left on disk, so it is removed before the error is
-        // rethrown. The `try?` on cleanup is deliberate: a failure to clean up
-        // must not mask the original error.
-        do {
-            try data.write(to: temporary, options: .atomic)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: Int16(0o600))],
-                ofItemAtPath: temporary.path
-            )
-
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: temporary)
-            } else {
-                try FileManager.default.moveItem(at: temporary, to: fileURL)
-            }
-
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: Int16(0o600))],
-                ofItemAtPath: fileURL.path
-            )
-        } catch {
-            try? FileManager.default.removeItem(at: temporary)
-            throw error
+    /// Reads, changes and writes back under one lock. Returning `nil` from
+    /// `change` writes nothing at all.
+    @discardableResult
+    private func mutate(_ change: ([Account]) -> [Account]?) throws -> Bool {
+        try Self.lock.withLock {
+            guard let changed = change(try load()) else { return false }
+            try write(changed)
+            return true
         }
     }
 
     public func upsert(_ account: Account) throws {
-        var accounts = try load()
-        if let index = accounts.firstIndex(where: { $0.id == account.id }) {
-            accounts[index] = account
-        } else {
-            accounts.append(account)
+        try mutate { accounts in
+            var accounts = accounts
+            if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+                accounts[index] = account
+            } else {
+                accounts.append(account)
+            }
+            return accounts
         }
-        try save(accounts)
+    }
+
+    /// Writes an account only if it is still stored, and reports whether it
+    /// was. This is what the poller uses, and the difference from `upsert`
+    /// matters: a pass loads its accounts once and can run for many seconds,
+    /// so the user can delete one while a check on it is in flight. `upsert`
+    /// would append the deleted account straight back — usually with
+    /// `needsReauth` set, since a dead token is what the write was recording.
+    @discardableResult
+    public func update(_ account: Account) throws -> Bool {
+        try mutate { accounts in
+            guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return nil }
+            var accounts = accounts
+            accounts[index] = account
+            return accounts
+        }
     }
 
     public func remove(id: String) throws {
-        try save(try load().filter { $0.id != id })
+        try mutate { $0.filter { $0.id != id } }
+    }
+}
+
+/// What reading the store produced. A failure carries the accounts that were
+/// already on screen, because showing none of them is indistinguishable from
+/// having lost them.
+public enum AccountsReading: Equatable {
+    case loaded([Account])
+    case failed(previous: [Account], message: String)
+
+    public var accounts: [Account] {
+        switch self {
+        case .loaded(let accounts): accounts
+        case .failed(let previous, _): previous
+        }
+    }
+
+    public var message: String? {
+        switch self {
+        case .loaded: nil
+        case .failed(_, let message): message
+        }
+    }
+}
+
+extension AccountStore {
+    /// The reading the app does at launch and after every change.
+    ///
+    /// Never throws. A missing slot is `.loaded([])` — a first launch owns no
+    /// accounts. Anything else keeps what the caller already had: a locked
+    /// keychain, or a refused prompt, must not empty the panel.
+    public func reload(keeping previous: [Account]) -> AccountsReading {
+        do {
+            return .loaded(try load())
+        } catch {
+            return .failed(previous: previous, message: "\(error)")
+        }
     }
 }

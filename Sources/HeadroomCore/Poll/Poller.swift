@@ -90,7 +90,12 @@ public actor Poller {
                 current.expiresAt = tokens.expiresAt
                 current.needsReauth = false
                 do {
-                    try store.upsert(current)
+                    // `update`, not `upsert`: a check can still be in flight
+                    // when the user deletes the account, and appending it back
+                    // here would resurrect it. A `false` return is that case —
+                    // not a failure, because there is nothing left to store the
+                    // rotated token on.
+                    try store.update(current)
                 } catch {
                     // Anthropic rotates the refresh token on EVERY refresh, so
                     // the old one is already dead on the server. Failing to
@@ -103,7 +108,7 @@ public actor Poller {
                 }
             } catch OAuthError.invalidGrant {
                 current.needsReauth = true
-                try? store.upsert(current)
+                try? store.update(current)
                 return await lastValueOr(account: account, description: "Rejected by the provider. Add this account again to renew it.")
             } catch {
                 await increaseBackoff(account.id)
@@ -141,7 +146,7 @@ public actor Poller {
             if current.needsReauth {
                 var cleared = current
                 cleared.needsReauth = false
-                try? store.upsert(cleared)
+                try? store.update(cleared)
             }
             await increaseBackoff(account.id)
             let named = account.organizationName.map { "\"\($0)\"" } ?? "This organisation"
@@ -158,7 +163,7 @@ public actor Poller {
             // to say so.
             var flagged = current
             flagged.needsReauth = true
-            try? store.upsert(flagged)
+            try? store.update(flagged)
             await increaseBackoff(account.id)
             return await lastValueOr(account: account, description: "Rejected by the provider. Add this account again to renew it.")
         } catch {
@@ -272,8 +277,11 @@ public actor Poller {
                 staleness: .cached(since: previous.fetchedAt)
             )
         }
+        // No windows at all rather than empty ones: nothing is known here, and
+        // a pair of zeroes would read as "completely free" to anything that
+        // looks at the numbers instead of the staleness.
         return AccountUsage(
-            session: .empty, weekly: .empty, scoped: [],
+            session: nil, weekly: nil, scoped: [],
             fetchedAt: await clock(), staleness: .error(description)
         )
     }

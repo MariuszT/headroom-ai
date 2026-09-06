@@ -9,15 +9,15 @@ private func fixture(_ name: String) throws -> Data {
 
 @Test func parsesTheFiveHourAndWeeklyWindows() throws {
     let usage = try AnthropicUsage.parse(fixture("anthropic_usage"), fetchedAt: Date())
-    #expect(usage.session.percent == 54)
-    #expect(usage.weekly.percent == 10)
+    #expect(usage.session?.percent == 54)
+    #expect(usage.weekly?.percent == 10)
     #expect(usage.staleness == .fresh)
 }
 
 @Test func parsesASixDigitFractionOfASecond() throws {
     let usage = try AnthropicUsage.parse(fixture("anthropic_usage"), fetchedAt: Date())
     let expected = Date(timeIntervalSince1970: 1_788_550_200) // 2026-09-04 19:30 UTC
-    let difference = try #require(usage.session.resetsAt).timeIntervalSince(expected)
+    let difference = try #require(usage.session?.resetsAt).timeIntervalSince(expected)
     #expect(abs(difference) < 1)
 }
 
@@ -27,10 +27,16 @@ private func fixture(_ name: String) throws -> Data {
     #expect(usage.scoped.first?.label == "Fable")
 }
 
-@Test func anEmptyResponseGivesEmptyWindows() throws {
+/// Absent, not zero. Reporting a window the provider never sent as 0% used
+/// asserts maximum headroom at the moment nothing is known — the reassuring
+/// direction, which this project errs away from.
+@Test func anEmptyResponseGivesNoWindowsAtAll() throws {
     let usage = try AnthropicUsage.parse(Data("{}".utf8), fetchedAt: Date())
-    #expect(usage.session.percent == 0)
+    #expect(usage.session == nil)
+    #expect(usage.weekly == nil)
     #expect(usage.scoped.isEmpty)
+    #expect(usage.windows.isEmpty)
+    #expect(usage.knownPercent == nil)
 }
 
 @Test func parsesADateWithNoFractionOfASecond() throws {
@@ -48,6 +54,6 @@ private func fixture(_ name: String) throws -> Data {
     """
     let usage = try AnthropicUsage.parse(Data(jsonWithoutFraction.utf8), fetchedAt: Date())
     let expected = Date(timeIntervalSince1970: 1_788_550_200) // 2026-09-04 19:30 UTC
-    let difference = try #require(usage.session.resetsAt).timeIntervalSince(expected)
+    let difference = try #require(usage.session?.resetsAt).timeIntervalSince(expected)
     #expect(abs(difference) < 1)
 }

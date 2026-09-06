@@ -80,7 +80,9 @@ private let threeUsages: [String: AccountUsage] = [
 /// the menu bar look better than it is precisely when least is known.
 @Test func accountsInErrorAreExcludedRatherThanCountedAsZero() {
     let errored = AccountUsage(
-        session: .empty, weekly: .empty, scoped: [],
+        session: LimitWindow(percent: 0, resetsAt: nil, label: "5 hours"),
+        weekly: LimitWindow(percent: 0, resetsAt: nil, label: "Week"),
+        scoped: [],
         fetchedAt: Date(), staleness: .error("no connection")
     )
     for metric in MenuBarMetric.allCases {

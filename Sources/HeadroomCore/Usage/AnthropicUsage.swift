@@ -44,25 +44,22 @@ public enum AnthropicUsage {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let response = try decoder.decode(Response.self, from: data)
 
-        let session = LimitWindow(
-            percent: response.fiveHour?.utilization ?? 0,
-            resetsAt: date(response.fiveHour?.resetsAt),
-            label: "5 hours"
-        )
-        let weekly = LimitWindow(
-            percent: response.sevenDay?.utilization ?? 0,
-            resetsAt: date(response.sevenDay?.resetsAt),
-            label: "Week"
-        )
+        // A window is built only from a utilization the provider actually
+        // sent. Absent or null means nothing is known about it, and it is left
+        // out entirely rather than reported as zero.
+        func window(_ raw: Response.Window?, label: String) -> LimitWindow? {
+            guard let utilization = raw?.utilization else { return nil }
+            return LimitWindow(percent: utilization, resetsAt: date(raw?.resetsAt), label: label)
+        }
+
+        let session = window(response.fiveHour, label: "5 hours")
+        let weekly = window(response.sevenDay, label: "Week")
         let scoped = (response.limits ?? [])
             .filter { $0.kind == "weekly_scoped" }
             .compactMap { limit -> LimitWindow? in
-                guard let name = limit.scope?.model?.displayName else { return nil }
-                return LimitWindow(
-                    percent: limit.percent ?? 0,
-                    resetsAt: date(limit.resetsAt),
-                    label: name
-                )
+                guard let name = limit.scope?.model?.displayName,
+                      let percent = limit.percent else { return nil }
+                return LimitWindow(percent: percent, resetsAt: date(limit.resetsAt), label: name)
             }
 
         return AccountUsage(

@@ -23,11 +23,24 @@ NOTARY_PROFILE ?= headroom-notary
 test:
 	swift test
 
-# Ad-hoc signed: fine on this machine, refused as "unidentified developer"
-# anywhere else. That is what `release` is for.
+# Signed with the Developer ID when the certificate is here, ad hoc when it is
+# not. This is about the keychain, not distribution: the tokens live in a
+# keychain item whose access list is bound to the designated requirement, and an
+# ad-hoc signature's requirement is a cdhash that changes on EVERY rebuild — so
+# an ad-hoc build asks for the keychain password each time it is rebuilt. A
+# Developer ID requirement is team id plus identifier, which does not move.
+#
+# Either way the build stays local: no hardened runtime, no notarisation. That
+# is what `release` is for.
 app: bundle
-	codesign --force --sign - $(APP)
-	@echo "Built $(APP) (ad-hoc signed, this machine only)"
+	@if security find-identity -v -p codesigning | grep -qF "$(SIGN_ID)"; then \
+		codesign --force --sign "$(SIGN_ID)" $(APP); \
+		echo "Built $(APP) (Developer ID, local build)"; \
+	else \
+		codesign --force --sign - $(APP); \
+		echo "Built $(APP) (ad hoc — no Developer ID certificate found;"; \
+		echo "  macOS will ask for your keychain password after every rebuild)"; \
+	fi
 
 bundle: icon
 	swift build -c release

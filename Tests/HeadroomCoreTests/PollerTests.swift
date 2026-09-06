@@ -50,7 +50,8 @@ private actor TestClock {
 private func usage(_ percent: Double) -> AccountUsage {
     AccountUsage(
         session: LimitWindow(percent: percent, resetsAt: nil, label: "5h"),
-        weekly: .empty, scoped: [], fetchedAt: Date(), staleness: .fresh
+        weekly: LimitWindow(percent: 0, resetsAt: nil, label: "Week"),
+        scoped: [], fetchedAt: Date(), staleness: .fresh
     )
 }
 
@@ -74,7 +75,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func anErrorReturnsTheLastKnownValueMarkedStale() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let poller = Poller(store: store, providers: [.anthropic: StubUsage(result: .success(usage(42)))])
     _ = await poller.refresh(account: account())
@@ -83,12 +84,12 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
     await failing.loadCache(await poller.cache)
     let result = await failing.refresh(account: account())
 
-    #expect(result.session.percent == 42)
+    #expect(result.session?.percent == 42)
     if case .cached = result.staleness {} else { Issue.record("expected a cached value") }
 }
 
 @Test func noCacheAndAnErrorGivesAnErrorState() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let poller = Poller(store: store, providers: [.anthropic: StubUsage(result: .failure(UsageError.http(500)))])
     let result = await poller.refresh(account: account())
@@ -96,7 +97,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func backoffWidensTheGapAfterA429() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let poller = Poller(
@@ -118,7 +119,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func anAccountInsideItsBackoffWindowIsNotQueriedAgain() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .failure(UsageError.rateLimited))
@@ -146,7 +147,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func aSuccessfulTokenRefreshStoresTheRotatedToken() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let subject = account(expiresAt: Date().addingTimeInterval(300)) // below the 600s threshold
     try store.upsert(subject)
 
@@ -171,7 +172,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func theRotatedTokenIsStoredBeforeTheUsageRequestCanFail() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let subject = account(expiresAt: Date().addingTimeInterval(300))
     try store.upsert(subject)
 
@@ -194,7 +195,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func invalidGrantFlagsOneAccountWithoutBlockingTheOthers() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let needingReauth = account(email: "expired@b.pl", expiresAt: Date().addingTimeInterval(300))
     let working = account(email: "works@b.pl", expiresAt: .distantFuture)
     try store.upsert(needingReauth)
@@ -208,7 +209,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 
     let results = await poller.refreshAll()
 
-    #expect(results[working.id]?.session.percent == 55)
+    #expect(results[working.id]?.session?.percent == 55)
 
     let saved = try store.load()
     let failedInStore = saved.first { $0.id == needingReauth.id }
@@ -218,7 +219,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func anUnknownTokenRefreshErrorEngagesBackoff() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let subject = account(expiresAt: Date().addingTimeInterval(300))
     try store.upsert(subject)
 
@@ -243,7 +244,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 // MARK: - F3: forced refresh ("Check now")
 
 @Test func aForcedRefreshQueriesAnAccountInsideItsNormalWindow() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .success(usage(10)))
@@ -270,7 +271,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func aForcedRefreshRespectsTheHard180sFloorSinceTheLastAttempt() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .success(usage(10)))
@@ -302,7 +303,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
     // all. No clock movement between the two forced refreshes — precisely the
     // scenario in which `AppModel.startLogin` triggers a check after each of
     // eleven consecutive Codex sign-ins.
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .failure(UsageError.rateLimited))
@@ -325,7 +326,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
     // the shallowest step. (Clearing the counter for an account the pass DOES
     // query is unchanged — that is the intended F3 behaviour, covered by
     // `aForcedRefreshClearsTheFailureCount` below.)
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .failure(UsageError.rateLimited))
@@ -368,7 +369,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
     // An account deep in backoff after a run of 429s — without clearing the
     // failure count the next ordinary failure after a forced refresh would drop
     // straight into an even deeper multiplier instead of starting over.
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .failure(UsageError.rateLimited))
@@ -392,15 +393,12 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 // MARK: - F6: a failed write of the rotated token must not be swallowed
 
 @Test func aFailedRotatedTokenWriteEngagesBackoffButReturnsTheCache() async throws {
-    // The store's directory points at a path where an ordinary file sits rather
-    // than a directory — `save()` cannot create `accounts.json` there, so every
-    // `upsert` fails deterministically.
-    let baseDirectory = try temporaryDirectory()
-    let fileInsteadOfDirectory = baseDirectory.appendingPathComponent("not-a-directory")
-    try Data().write(to: fileInsteadOfDirectory)
-    let brokenStore = AccountStore(directory: fileInsteadOfDirectory)
-
     let subject = account(expiresAt: Date().addingTimeInterval(300)) // below 600s → forces a token refresh
+    // The account is there to be found, but every write to the secret slot
+    // fails the way a locked keychain would refuse one — so storing the
+    // rotated token fails deterministically.
+    let brokenStore = AccountStore(secrets: FailingSecretStore(seeded: [subject]))
+
     let newTokens = Tokens(
         accessToken: "new-access", refreshToken: "new-refresh",
         expiresAt: Date().addingTimeInterval(3600)
@@ -419,7 +417,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
     // The old cached value, because storing the rotated token failed — NOT the
     // new usage figure, which we would never have reached without a stored
     // token.
-    #expect(result.session.percent == 30)
+    #expect(result.session?.percent == 30)
     if case .cached = result.staleness {} else {
         Issue.record("expected a cached value after the rotated token failed to store")
     }
@@ -430,7 +428,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func rejectedTokenMarksAccountForReauthentication() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let poller = Poller(
         store: store,
@@ -444,7 +442,7 @@ private func account(email: String = "a@b.pl", expiresAt: Date = .distantFuture)
 }
 
 @Test func rateLimitDoesNotMarkAccountForReauthentication() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let poller = Poller(
         store: store,
@@ -467,7 +465,7 @@ private final class CollectedResults {
 
 @MainActor
 @Test func refreshAllPublishesResultsIncrementally() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     let first = account(email: "a@b.pl")
     let second = account(email: "b@b.pl")
     try store.upsert(first)
@@ -483,10 +481,24 @@ private final class CollectedResults {
     #expect(finalResult.count == 2)
 }
 
-private func temporaryDirectory() throws -> URL {
-    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
+/// Reads back what it was seeded with and refuses every write — the shape a
+/// keychain failure takes from `AccountStore`'s side.
+///
+/// Seeding matters: `AccountStore.update` writes only accounts it can still
+/// find, so a store that read as empty would model "the account was deleted"
+/// (no write attempted, no failure) rather than "the write failed".
+private struct FailingSecretStore: SecretStore {
+    struct Refused: Error {}
+    let seeded: [Account]
+
+    func read() throws -> Data? {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        return try encoder.encode(seeded)
+    }
+
+    func write(_ data: Data) throws { throw Refused() }
+    func delete() throws { throw Refused() }
 }
 
 /// The hard 180s floor keys on the account id, so it survives signing in again.
@@ -494,7 +506,7 @@ private func temporaryDirectory() throws -> URL {
 /// by it for nearly three minutes — at exactly the moment the user is watching
 /// to see whether the sign-in did anything.
 @Test func signingInAgainUnblocksTheImmediateCheck() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let provider = CountingProvider(result: .success(usage(11)))
     let poller = Poller(store: store, providers: [.anthropic: provider])
@@ -514,7 +526,7 @@ private func temporaryDirectory() throws -> URL {
 /// adding the same account in the same organisation gives the same error, so
 /// the row has to say what specifically to change.
 @Test func anOrganizationRefusalExplainsWhatToDo() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let poller = Poller(
         store: store,
@@ -534,7 +546,7 @@ private func temporaryDirectory() throws -> URL {
 /// answer with the same 403, and only the first is worth acting on. The row has
 /// to tell them apart.
 @Test func anOrganizationRefusalSeparatesAWrongOrgFromNoSubscription() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
 
     var subscriber = account(email: "subscriber@b.pl")
     subscriber.organizationName = "Some API Team"
@@ -563,7 +575,7 @@ private func temporaryDirectory() throws -> URL {
 /// authorised — an account can belong to several, and the user has no other
 /// way to tell which login the app actually made.
 @Test func anOrganizationRefusalNamesTheOrganization() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     var subject = account()
     subject.organizationName = "Acme API Team"
     try store.upsert(subject)
@@ -586,7 +598,7 @@ private func temporaryDirectory() throws -> URL {
 /// is alive, so the flag has to go — otherwise the row would show the generic
 /// "add the account again", which is exactly the advice that does not work here.
 @Test func anOrganizationRefusalClearsTheDeadTokenFlag() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     var toFlag = account()
     toFlag.needsReauth = true
     try store.upsert(toFlag)
@@ -605,7 +617,7 @@ private func temporaryDirectory() throws -> URL {
 /// user asked for this account by name, but the hard 180-second floor still
 /// holds — Anthropic answers 429 below it no matter who asked.
 @Test func refreshingOneAccountIgnoresBackoffButNotTheFloor() async throws {
-    let store = AccountStore(directory: try temporaryDirectory())
+    let store = AccountStore(secrets: InMemorySecretStore())
     try store.upsert(account())
     let clock = TestClock()
     let provider = CountingProvider(result: .failure(UsageError.rateLimited))
@@ -624,4 +636,114 @@ private func temporaryDirectory() throws -> URL {
     await clock.advance(by: 130)
     _ = await poller.refreshOne(account: account())
     #expect(await provider.calls == 2)
+}
+
+// MARK: - An account deleted mid-pass must not come back
+
+/// `refreshAll` loads its accounts once and can run for many seconds — 400 ms
+/// per account plus the network — so the trash button can land while a check on
+/// that very account is in flight. The poller then still holds the copy it
+/// loaded, and writing it back with `upsert` would append the deleted account
+/// again, flagged `needsReauth` because a dead token is what the write was
+/// recording. It has to write only what is still there.
+@Test func aTokenRotationDoesNotResurrectAnAccountDeletedMidPass() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let subject = account(expiresAt: Date().addingTimeInterval(300)) // below 600s → forces a token refresh
+    try store.upsert(subject)
+    // The user presses the trash button while the check is in flight.
+    try store.remove(id: subject.id)
+
+    let poller = Poller(
+        store: store,
+        providers: [.anthropic: StubUsage(result: .success(usage(50)))],
+        oauth: [.anthropic: StubOAuth(result: .success(Tokens(
+            accessToken: "new-access", refreshToken: "new-refresh",
+            expiresAt: Date().addingTimeInterval(3600)
+        )))]
+    )
+
+    _ = await poller.refresh(account: subject)
+
+    #expect(try store.load().isEmpty)
+}
+
+@Test func aRejectedTokenDoesNotResurrectAnAccountDeletedMidPass() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let subject = account(expiresAt: Date().addingTimeInterval(300))
+    try store.upsert(subject)
+    try store.remove(id: subject.id)
+
+    let poller = Poller(
+        store: store,
+        providers: [.anthropic: StubUsage(result: .success(usage(50)))],
+        oauth: [.anthropic: StubOAuth(result: .failure(OAuthError.invalidGrant))]
+    )
+
+    _ = await poller.refresh(account: subject)
+
+    #expect(try store.load().isEmpty)
+}
+
+/// The same for the 401/403 path, which reaches the store without going
+/// through a token refresh at all.
+@Test func anUnauthorizedReplyDoesNotResurrectAnAccountDeletedMidPass() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let subject = account()
+    try store.upsert(subject)
+    try store.remove(id: subject.id)
+
+    let poller = Poller(
+        store: store,
+        providers: [.anthropic: StubUsage(result: .failure(UsageError.unauthorized))],
+        oauth: [:]
+    )
+
+    _ = await poller.refresh(account: subject)
+
+    #expect(try store.load().isEmpty)
+}
+
+/// Every account publishes through `onResult`, including the ones a pass skips
+/// because they are waiting out a backoff. `AppModel` relies on exactly this:
+/// it no longer assigns the returned dictionary wholesale — that discarded
+/// anything written DURING the pass, such as the reading for an account signed
+/// in while the pass was running — so a branch that returned a value without
+/// publishing it would leave that row blank instead.
+@MainActor
+@Test func refreshAllPublishesSkippedAccountsToo() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let first = account(email: "a@b.pl")
+    let second = account(email: "b@b.pl")
+    try store.upsert(first)
+    try store.upsert(second)
+    let poller = Poller(
+        store: store,
+        providers: [.anthropic: StubUsage(result: .failure(UsageError.rateLimited))]
+    )
+
+    // The first pass fails both accounts and engages their backoff.
+    _ = await poller.refreshAll()
+
+    // The second finds both still waiting, and must publish them anyway.
+    let collected = CollectedResults()
+    _ = await poller.refreshAll(onResult: { id, _ in collected.add(id) })
+
+    #expect(Set(collected.order) == Set([first.id, second.id]))
+}
+
+/// The same for the hard 180-second floor, which a forced pass hits instead of
+/// the backoff.
+@MainActor
+@Test func aForcedRefreshPublishesAccountsCheckedMomentsAgo() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let subject = account()
+    try store.upsert(subject)
+    let poller = Poller(store: store, providers: [.anthropic: StubUsage(result: .success(usage(20)))])
+
+    _ = await poller.refreshAll()
+
+    let collected = CollectedResults()
+    _ = await poller.refreshAll(forced: true, onResult: { id, _ in collected.add(id) })
+
+    #expect(collected.order == [subject.id])
 }

@@ -15,9 +15,12 @@ public enum CodexUsage {
         let rateLimit: RateLimit?
     }
 
-    private static func window(_ window: Response.RateLimit.Window?, label: String) -> LimitWindow {
-        LimitWindow(
-            percent: window?.usedPercent ?? 0,
+    /// Built only from a percentage the provider actually sent — an absent
+    /// window is left out rather than reported as zero.
+    private static func window(_ window: Response.RateLimit.Window?, label: String) -> LimitWindow? {
+        guard let used = window?.usedPercent else { return nil }
+        return LimitWindow(
+            percent: used,
             resetsAt: window?.resetAt.map { Date(timeIntervalSince1970: $0) },
             label: label
         )

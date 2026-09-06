@@ -8,6 +8,11 @@ import HeadroomCore
 @MainActor
 final class AppModel {
     private(set) var accounts: [Account] = []
+    /// Set when the accounts could not be read — a locked keychain, or a prompt
+    /// the user dismissed. It exists so the panel can say what happened: an
+    /// empty list looks exactly like having lost every account, and the user
+    /// would go and sign them all in again.
+    private(set) var storeProblem: String?
     private(set) var usage: [String: AccountUsage] = [:]
     private(set) var isRefreshing = false
 
@@ -18,6 +23,73 @@ final class AppModel {
     /// depend on whether `preferences.migrate()` in `init()` has run yet.
     var showsPercentInMenuBar = Preferences().showsPercentInMenuBar {
         didSet { preferences.showsPercentInMenuBar = showsPercentInMenuBar }
+    }
+
+    /// How each section arranges its accounts, and the arrangement itself.
+    /// Mirrored here rather than read from `Preferences` on every access,
+    /// because `@Observable` tracks stored properties — a computed read of
+    /// `UserDefaults` would change the order without redrawing the panel.
+    ///
+    /// Keyed by `Provider.rawValue` because that is the currency `Preferences`
+    /// and `AccountOrdering.sections` already deal in, so nothing has to be
+    /// converted on the way in or out. (`Provider` is perfectly `Hashable` —
+    /// synthesised from its `String` raw value, which is also what
+    /// `ForEach(model.sections, id: \.self)` relies on.)
+    private(set) var sortModes: [String: SortMode] = [:]
+    private(set) var manualOrders: [String: [String]] = [:]
+    /// The sections in the order they are shown; always every provider exactly
+    /// once — see `AccountOrdering.sections`.
+    private(set) var sections: [Provider] = AccountOrdering.sections(Preferences().sectionOrder)
+
+    func sortMode(for provider: Provider) -> SortMode {
+        sortModes[provider.rawValue] ?? .alphabetical
+    }
+
+    /// One section's accounts, arranged the way that section is set to arrange
+    /// them. See `AccountOrdering.sorted` — the logic lives in the core so it
+    /// can be tested without a running app.
+    func orderedAccounts(for provider: Provider) -> [Account] {
+        AccountOrdering.sorted(
+            accounts.filter { $0.provider == provider },
+            usage: usage,
+            mode: sortMode(for: provider),
+            manualOrder: manualOrders[provider.rawValue] ?? []
+        )
+    }
+
+    /// The button in the section header. Manual is not in the cycle: it is
+    /// entered by dragging, and clicking out of it returns to alphabetical.
+    func cycleSortMode(for provider: Provider) {
+        setSortMode(sortMode(for: provider).next, for: provider)
+    }
+
+    private func setSortMode(_ mode: SortMode, for provider: Provider) {
+        sortModes[provider.rawValue] = mode
+        preferences.setSortMode(mode, for: provider)
+    }
+
+    /// Two accounts exchanging places, within a single section.
+    ///
+    /// The order is taken from what is on screen, not from what was stored:
+    /// the first drag out of an alphabetical section has no stored order to
+    /// rearrange, and the arrangement the user is looking at is the one they
+    /// mean to change. Dropping is also what enters manual mode — asking for a
+    /// separate click to keep the result would be a trap.
+    func dropAccount(_ draggedID: String, onto targetID: String, in provider: Provider) {
+        let shown = orderedAccounts(for: provider).map(\.id)
+        let reordered = AccountOrdering.swapping(draggedID, with: targetID, in: shown)
+        guard reordered != shown else { return }
+        manualOrders[provider.rawValue] = reordered
+        preferences.setManualOrder(reordered, for: provider)
+        setSortMode(.manual, for: provider)
+    }
+
+    func dropSection(_ dragged: Provider, onto target: Provider) {
+        let reordered = AccountOrdering.swapping(
+            dragged.rawValue, with: target.rawValue, in: sections.map(\.rawValue)
+        )
+        sections = AccountOrdering.sections(reordered)
+        preferences.sectionOrder = reordered
     }
 
     /// Which question the menu bar answers. See `MenuBarMetric`.
@@ -120,10 +192,9 @@ final class AppModel {
     private var loginTask: Task<Void, Never>?
 
     init() {
-        _ = try? StoreMigration.run(
-            from: AccountStore.legacyDirectory,
-            to: AccountStore.defaultDirectory
-        )
+        // Versions before the move to the keychain left the tokens in a file;
+        // this picks them up once and deletes it.
+        _ = try? KeychainMigration.run(to: store)
         preferences.migrate()
         poller = Poller(
             store: store,
@@ -136,6 +207,10 @@ final class AppModel {
                 .openai: OpenAIOAuth(),
             ]
         )
+        for provider in Provider.allCases {
+            sortModes[provider.rawValue] = preferences.sortMode(for: provider)
+            manualOrders[provider.rawValue] = preferences.manualOrder(for: provider)
+        }
         loadAccounts()
         startLoop()
     }
@@ -146,9 +221,14 @@ final class AppModel {
         MenuBarReading.all(accounts: accounts, usage: usage, metric: menuBarMetric)
     }
 
+    /// See `AccountStore.reload(keeping:)` — the logic lives in the core so it
+    /// can be tested without a running app.
     func loadAccounts() {
-        accounts = (try? store.load()) ?? []
+        let reading = store.reload(keeping: accounts)
+        accounts = reading.accounts
+        storeProblem = reading.message
     }
+
 
     /// Forced: ignores `nextDueAt` (and therefore the backoff, and "too early
     /// for an automatic cycle") for every account, respecting only the hard
@@ -312,9 +392,9 @@ final class AppModel {
     /// `onResult` publishes into `usage` AFTER EACH ACCOUNT rather than after
     /// the whole series of seventeen requests — without it the panel would sit
     /// empty for 15-20 s at app start even though the first results are ready
-    /// within a fraction of a second. The final `usage = ...` assignment
-    /// below stays as an end-of-pass consistency guarantee, in case anything
-    /// bypassed `onResult`.
+    /// within a fraction of a second. It is also the ONLY thing that publishes:
+    /// see the note at the call below for why the returned dictionary is
+    /// thrown away.
     ///
     /// Accounts are reloaded here (not only in `init`, `remove` and after a
     /// sign-in) for two reasons: `needsReauth`, written by the `Poller` after
@@ -324,7 +404,18 @@ final class AppModel {
     private func refreshOnce(forced: Bool = false) async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        usage = await poller.refreshAll(
+        // The results land through `onResult`, one at a time, and the returned
+        // dictionary is deliberately DISCARDED. `refreshAll` keys it by the
+        // accounts it loaded when the pass began, so assigning it wholesale
+        // threw away anything written while the pass was running — above all
+        // the reading `checkImmediately` stores for an account signed in
+        // mid-pass, which a browser sign-in takes long enough to be. That row
+        // then sat empty until the next cycle, up to half an hour later, which
+        // is the very thing `checkImmediately` exists to prevent.
+        //
+        // Nothing is lost by discarding it: every branch of `refreshAll`
+        // publishes through `onResult` — see `refreshAllPublishesSkippedAccountsToo`.
+        _ = await poller.refreshAll(
             interval: intervalSeconds,
             forced: forced,
             onResult: { [weak self] id, accountUsage in
