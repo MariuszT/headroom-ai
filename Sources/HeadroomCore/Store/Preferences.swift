@@ -19,14 +19,59 @@ public struct Preferences {
     private static let menuBarMetricKey = "menuBarMetric"
     private static let dismissedUpdateKey = "dismissedUpdateVersion"
     private static let sectionOrderKey = "sectionOrder"
+    private static let notifiesRenewalsKey = "notifiesRenewals"
 
     // Per-provider, so that one section's arrangement says nothing about the
     // other's — which is the whole reason the control sits in each header.
     private static func sortModeKey(_ provider: Provider) -> String { "sortMode.\(provider.rawValue)" }
     private static func manualOrderKey(_ provider: Provider) -> String { "manualOrder.\(provider.rawValue)" }
 
+    private static func renewalKey(_ accountID: String) -> String { "renewal.\(accountID)" }
+
+    /// Whether the system should deliver renewal reminders as well. Off until
+    /// asked for: turning it on prompts for a permission, and an app that
+    /// prompts before the user has expressed any interest gets its permission
+    /// denied once and for good.
+    public var notifiesRenewals: Bool {
+        get { defaults.bool(forKey: Self.notifiesRenewalsKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.notifiesRenewalsKey) }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+    }
+
+    /// When one account's plan renews.
+    ///
+    /// Kept here rather than on `Account` on purpose. `Poller.refresh` works
+    /// from a snapshot taken at the start of a pass and writes that whole
+    /// snapshot back after rotating a token, and a fresh sign-in replaces the
+    /// whole record through `upsert` — either would silently drop a renewal
+    /// stored on the account. Here nothing but the user's own editing touches
+    /// it, and a re-login keeps it. It is also not a secret, so it has no claim
+    /// on the keychain.
+    ///
+    /// Anything stored that no longer decodes reads as none, like the other
+    /// settings here: the shape may change between versions, and a panel that
+    /// refuses to draw is worse than a date the user has to set again.
+    public func renewal(for accountID: String) -> RenewalSchedule? {
+        guard let data = defaults.data(forKey: Self.renewalKey(accountID)) else { return nil }
+        return try? JSONDecoder().decode(RenewalSchedule.self, from: data)
+    }
+
+    /// Clearing and failing to encode are NOT the same thing, so they do not
+    /// share a branch. Folding them together meant a failed encode deleted the
+    /// date already stored — the caller asked to change it, and the app
+    /// answered by throwing away what was there, while the in-memory copy went
+    /// on showing the new value until the next reload quietly dropped it.
+    public func setRenewal(_ schedule: RenewalSchedule?, for accountID: String) {
+        let key = Self.renewalKey(accountID)
+        guard let schedule else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(schedule) else { return }
+        defaults.set(data, forKey: key)
     }
 
     public var showsPercentInMenuBar: Bool {

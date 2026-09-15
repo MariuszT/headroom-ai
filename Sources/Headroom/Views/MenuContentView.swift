@@ -58,39 +58,76 @@ struct MenuContentView: View {
     /// "11 Sep 08:00" alone needs 66 pt.
     private var panelWidth: CGFloat { isWide ? 560 : 380 }
 
+    /// The account whose renewal is being edited, or none. Held here rather
+    /// than in the cell because the editor is drawn over the whole panel.
+    @State private var editingRenewalFor: String?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if showingSettings {
-                SettingsView(model: model, close: { showingSettings = false })
-            } else {
-                updateBanner
-                storeBanner
-                banner
-                if model.accounts.isEmpty {
-                    emptyState
+        ZStack {
+            VStack(alignment: .leading, spacing: 0) {
+                if showingSettings {
+                    SettingsView(model: model, close: { showingSettings = false })
                 } else {
-                    list
+                    updateBanner
+                    storeBanner
+                    banner
+                    if model.accounts.isEmpty {
+                        emptyState
+                    } else {
+                        list
+                    }
+                    Divider()
+                    footer
                 }
-                Divider()
-                footer
+            }
+            .frame(width: panelWidth)
+            .coordinateSpace(.named(Self.panelSpace))
+            // The panel can vanish mid-drag — it closes the moment anything else
+            // takes focus — and `onEnded` never arrives. Everything the gesture set
+            // has to be let go of here, not just the cursor: this `@State` outlives
+            // the panel (which is why `onAppear` resets `showingSettings`), so a
+            // half-finished drag came back on the next open as a cell stuck in the
+            // air, offset by a translation from minutes ago.
+            .onDisappear { releaseDrag() }
+            .onPreferenceChange(CellFrames.self) { cellFrames = $0 }
+            .onPreferenceChange(HeaderFrames.self) { headerFrames = $0 }
+            // Settings used to be a sheet, which stayed open behind the panel: the
+            // panel closed, "Done" never reached it, and reopening the panel showed
+            // Settings again. It is part of the panel now, and opening the panel
+            // always starts on the list.
+            .onAppear { showingSettings = false }
+
+            if let id = editingRenewalFor,
+               let account = model.accounts.first(where: { $0.id == id }) {
+                renewalEditor(for: account)
             }
         }
-        .frame(width: panelWidth)
-        .coordinateSpace(.named(Self.panelSpace))
-        // The panel can vanish mid-drag — it closes the moment anything else
-        // takes focus — and `onEnded` never arrives. Everything the gesture set
-        // has to be let go of here, not just the cursor: this `@State` outlives
-        // the panel (which is why `onAppear` resets `showingSettings`), so a
-        // half-finished drag came back on the next open as a cell stuck in the
-        // air, offset by a translation from minutes ago.
-        .onDisappear { releaseDrag() }
-        .onPreferenceChange(CellFrames.self) { cellFrames = $0 }
-        .onPreferenceChange(HeaderFrames.self) { headerFrames = $0 }
-        // Settings used to be a sheet, which stayed open behind the panel: the
-        // panel closed, "Done" never reached it, and reopening the panel showed
-        // Settings again. It is part of the panel now, and opening the panel
-        // always starts on the list.
-        .onAppear { showingSettings = false }
+        // Like `showingSettings`, this `@State` outlives the panel, so an
+        // editor left open would come back over the list the next time the
+        // panel is opened.
+        .onDisappear { editingRenewalFor = nil }
+    }
+
+    /// The editor, and the scrim that both dims the list and swallows clicks
+    /// meant for it — without the scrim the cells underneath stay draggable
+    /// while a modal errand is open on top of them.
+    private func renewalEditor(for account: Account) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(.black.opacity(0.18))
+                .onTapGesture { editingRenewalFor = nil }
+
+            RenewalEditorView(
+                email: account.email,
+                renewal: model.renewals[account.id],
+                save: {
+                    model.setRenewal($0, for: account.id)
+                    editingRenewalFor = nil
+                },
+                cancel: { editingRenewalFor = nil }
+            )
+        }
+        .transition(.opacity)
     }
 
     // MARK: - Parts
@@ -213,8 +250,10 @@ struct MenuContentView: View {
                                 AccountRowView(
                                     account: account,
                                     usage: model.usage[account.id],
+                                    renewal: model.renewals[account.id],
                                     refresh: { model.refreshAccount(id: account.id) },
-                                    remove: { model.remove(id: account.id) }
+                                    remove: { model.remove(id: account.id) },
+                                    editRenewal: { editingRenewalFor = account.id }
                                 )
                                 .modifier(Lift(
                                     held: dragging == account.id,

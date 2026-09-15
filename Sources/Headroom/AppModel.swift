@@ -212,6 +212,13 @@ final class AppModel {
             manualOrders[provider.rawValue] = preferences.manualOrder(for: provider)
         }
         loadAccounts()
+        // At launch, not only when Settings is opened. A permission granted in
+        // an earlier session can be gone — revoked in System Settings, or
+        // forgotten because the signature changed between builds — and until
+        // this runs the switch keeps claiming "on" while every request is
+        // dropped. That is the worst of the three states, because it is the one
+        // that looks fine.
+        checkNotificationAuthorization()
         startLoop()
     }
 
@@ -227,6 +234,27 @@ final class AppModel {
         let reading = store.reload(keeping: accounts)
         accounts = reading.accounts
         storeProblem = reading.message
+        // Rebuilt here rather than once in `init`, because this also runs after
+        // a sign-in: an account added mid-session must pick up a date it
+        // already had, and re-reading is safe because `setRenewal` writes
+        // through to `Preferences` before it ever gets here.
+        // `uniquingKeysWith`, not `uniqueKeysWithValues`: the latter TRAPS on a
+        // duplicate key. `AccountStore.load` decodes the stored array verbatim
+        // and never deduplicates — uniqueness is an invariant `upsert` happens
+        // to keep, not one the document guarantees — so a single duplicated
+        // entry would turn a cosmetic oddity into a crash at launch, inside the
+        // one method written to survive a damaged store.
+        renewals = Dictionary(
+            accounts.compactMap { account in
+                preferences.renewal(for: account.id).map { (account.id, $0) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Also on every reload, not just on edit: a reminder is scheduled for a
+        // single date, so the one for a renewal that has just passed has to be
+        // replaced by one for the next cycle, and an app left running for weeks
+        // would otherwise go quiet after the first round.
+        rescheduleReminders()
     }
 
 
@@ -251,9 +279,94 @@ final class AppModel {
     }
 
     func remove(id: String) {
-        try? store.remove(id: id)
+        // Only once the account is really gone. `store.remove` throws on a
+        // locked keychain or a refused prompt, and `loadAccounts` then puts the
+        // account straight back on screen — while the renewal the user typed by
+        // hand would already have been deleted for good. Clearing state for a
+        // removal that did not happen is the same defect as `63c91fa`.
+        guard (try? store.remove(id: id)) != nil else {
+            loadAccounts()
+            return
+        }
         usage[id] = nil
+        // The renewal lives outside the account (see `Preferences.renewal`), so
+        // it does not leave with it — and an id is `provider:email`, which a
+        // later sign-in of the same address would reuse, inheriting a date set
+        // for an account the user deliberately removed.
+        setRenewal(nil, for: id)
         loadAccounts()
+    }
+
+    /// When each account's plan renews, mirrored here for the same reason as
+    /// `sortModes`: SwiftUI observes this model, not `UserDefaults`.
+    private(set) var renewals: [String: RenewalSchedule] = [:]
+
+    func setRenewal(_ schedule: RenewalSchedule?, for id: String) {
+        renewals[id] = schedule
+        preferences.setRenewal(schedule, for: id)
+        rescheduleReminders()
+    }
+
+    /// Whether macOS should deliver the reminders too. The panel and the icon
+    /// show renewals regardless — this only adds a banner, and it is the one
+    /// part that a refused permission can take away.
+    var notifiesRenewals = Preferences().notifiesRenewals {
+        didSet {
+            preferences.notifiesRenewals = notifiesRenewals
+            guard notifiesRenewals else {
+                renewalNotificationProblem = nil
+                rescheduleReminders()
+                return
+            }
+            authorizationTask?.cancel()
+            authorizationTask = Task {
+                let problem = await RenewalNotifier.requestAuthorization()
+                // The switch can have been turned off while the system dialog
+                // was up. Reporting "not allowed" under a switch that is
+                // already off leaves an orange line no one can clear.
+                guard !Task.isCancelled, notifiesRenewals else { return }
+                renewalNotificationProblem = problem
+                rescheduleReminders()
+            }
+        }
+    }
+
+    private(set) var renewalNotificationProblem: String?
+
+    /// Held so a second flip of the switch cancels the first one's pending
+    /// answer rather than racing it for the same field.
+    private var authorizationTask: Task<Void, Never>?
+
+    /// Re-checks what the system currently allows — at launch, and again
+    /// whenever Settings is opened.
+    func checkNotificationAuthorization() {
+        guard notifiesRenewals else {
+            renewalNotificationProblem = nil
+            return
+        }
+        authorizationTask?.cancel()
+        authorizationTask = Task {
+            let problem = await RenewalNotifier.authorizationProblem()
+            guard !Task.isCancelled, notifiesRenewals else { return }
+            renewalNotificationProblem = problem
+        }
+    }
+
+    private func rescheduleReminders() {
+        RenewalNotifier.reschedule(
+            RenewalReminders.all(accounts: accounts, renewals: renewals),
+            enabled: notifiesRenewals,
+            knownAccountIDs: accounts.map(\.id)
+        )
+    }
+
+    /// Whether any account is inside its own lead window — what puts the mark
+    /// on the menu bar icon. Deliberately separate from the glyphs' fill, which
+    /// means usage and must go on meaning only that.
+    func hasRenewalDue(now: Date = Date()) -> Bool {
+        accounts.contains { account in
+            renewals[account.id]?.status(now: now).isAlerting ?? false
+        }
     }
 
     /// What a sign-in is doing, and how the last one ended.

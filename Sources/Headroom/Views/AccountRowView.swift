@@ -15,8 +15,14 @@ import HeadroomCore
 struct AccountRowView: View {
     let account: Account
     let usage: AccountUsage?
+    /// When this account's plan renews, as the user told us — neither provider
+    /// reports it. See `RenewalSchedule`.
+    let renewal: RenewalSchedule?
     let refresh: () -> Void
     let remove: () -> Void
+    /// Opens the renewal editor, which is drawn over the panel rather than
+    /// inside this cell — see `MenuContentView.renewalEditor`.
+    let editRenewal: () -> Void
 
     /// Removing an account means signing in through a browser again to undo it,
     /// so a single stray click must not be enough. The confirmation is inline
@@ -39,6 +45,19 @@ struct AccountRowView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
                 }
+
+                Button(action: editRenewal) {
+                    Image(systemName: renewal == nil ? "calendar" : "calendar.badge.clock")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(renewalStatus?.isAlerting == true
+                    ? AnyShapeStyle(Color.orange)
+                    : AnyShapeStyle(.tertiary))
+                .help(renewal == nil
+                    ? "Set when \(account.email) renews"
+                    : "Change when \(account.email) renews")
+                .disabled(confirmingRemoval)
 
                 Button(action: refresh) {
                     Image(systemName: "arrow.clockwise")
@@ -64,6 +83,16 @@ struct AccountRowView: View {
             } else {
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     WindowLine(window: window)
+                }
+
+                if let renewal {
+                    // Colour only inside the account's own lead window. A date
+                    // two months out is information, not a warning, and a panel
+                    // that colours everything teaches the eye to skip it.
+                    Text(RenewalLine.text(for: renewal))
+                        .font(.system(size: 10))
+                        .foregroundStyle(renewalStatus?.isAlerting == true ? Color.orange : .secondary)
+                        .lineLimit(1)
                 }
 
                 if let note {
@@ -111,6 +140,10 @@ struct AccountRowView: View {
     /// can be tested without a running app.
     private var note: String? {
         AccountNote.text(for: account, usage: usage)
+    }
+
+    private var renewalStatus: RenewalStatus? {
+        renewal?.status(now: Date())
     }
 }
 

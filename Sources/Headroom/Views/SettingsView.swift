@@ -57,6 +57,25 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                Toggle("Notify me before a plan renews", isOn: $model.notifiesRenewals)
+
+                if let problem = model.renewalNotificationProblem {
+                    Text(problem)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // Says where the dates come from, because nothing fetches
+                    // them: neither provider exposes a billing date to the
+                    // tokens this app holds.
+                    Text("Renewal dates are the ones you set on each account. Neither provider reports them.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Check every \(Int(model.intervalSeconds / 60)) min")
                 Slider(value: $model.intervalSeconds, in: 180...1800, step: 60)
                 Text("Anthropic rejects checks more often than every 3 minutes per account.")
@@ -65,5 +84,9 @@ struct SettingsView: View {
             }
         }
         .padding(14)
+        // A permission can disappear between sessions, so what the switch
+        // claims is re-checked every time this view is opened rather than only
+        // when it is touched.
+        .onAppear { model.checkNotificationAuthorization() }
     }
 }

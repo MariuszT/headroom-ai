@@ -17,6 +17,8 @@ enum MenuBarIcon {
     private static let glyph = NSSize(width: 13, height: 16)
     private static let glyphToText: CGFloat = 3
     private static let betweenReadings: CGFloat = 7
+    private static let dot = NSSize(width: 4, height: 4)
+    private static let beforeDot: CGFloat = 5
 
     private static var textFont: NSFont {
         .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
@@ -28,11 +30,20 @@ enum MenuBarIcon {
     static func label(for model: AppModel) -> some View {
         Image(nsImage: image(
             readings: model.menuBarReadings,
-            showsPercent: model.showsPercentInMenuBar
+            showsPercent: model.showsPercentInMenuBar,
+            renewalDue: model.hasRenewalDue()
         ))
     }
 
-    static func image(readings: [MenuBarReading], showsPercent: Bool) -> NSImage {
+    /// `renewalDue` adds a dot after the readings. Deliberately NOT drawn into
+    /// the glyphs: their fill means how much of a limit is gone, and a renewal
+    /// says nothing about that. Two meanings in one shape would make the icon
+    /// unreadable in both.
+    static func image(
+        readings: [MenuBarReading],
+        showsPercent: Bool,
+        renewalDue: Bool = false
+    ) -> NSImage {
         // No accounts at all still needs a glyph to click on.
         let parts: [(fill: Double?, text: String?)] = readings.isEmpty
             ? [(nil, nil)]
@@ -51,6 +62,7 @@ enum MenuBarIcon {
                 width += glyphToText + (text as NSString).size(withAttributes: attributes).width
             }
         }
+        if renewalDue { width += beforeDot + dot.width }
 
         let image = NSImage(size: NSSize(width: width, height: glyph.height), flipped: false) { _ in
             var x: CGFloat = 0
@@ -67,6 +79,16 @@ enum MenuBarIcon {
                     )
                     x += size.width
                 }
+            }
+            if renewalDue {
+                x += beforeDot
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: NSRect(
+                    x: x,
+                    y: (glyph.height - dot.height) / 2,
+                    width: dot.width,
+                    height: dot.height
+                )).fill()
             }
             return true
         }
