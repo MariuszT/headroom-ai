@@ -87,6 +87,35 @@ extension NetworkTests {
             MockProtocol.response = (200, Data("not json".utf8))
             #expect(await checker().check(currentVersion: "1.0") == nil)
         }
+
+        /// The button in Settings has to say which of three things happened —
+        /// newer release, nothing newer, or no answer — where the automatic
+        /// check folds the last two together.
+        @Test func aCheckResultTellsNothingNewerFromNoAnswer() async {
+            MockProtocol.response = (200, Data(#"{"tag_name":"v1.4","html_url":"https://example.invalid/r"}"#.utf8))
+            #expect(await checker().checkResult(currentVersion: "1.0")
+                == .available(AvailableUpdate(version: "1.4", url: URL(string: "https://example.invalid/r")!)))
+
+            MockProtocol.response = (200, Data(#"{"tag_name":"v1.0","html_url":"https://example.invalid/r"}"#.utf8))
+            #expect(await checker().checkResult(currentVersion: "1.0") == .upToDate)
+
+            MockProtocol.response = (503, Data())
+            #expect(await checker().checkResult(currentVersion: "1.0") == .failed)
+
+            MockProtocol.response = (200, Data("not json".utf8))
+            #expect(await checker().checkResult(currentVersion: "1.0") == .failed)
+        }
+
+        /// Any JSON object decodes, so a proxy's error page sent with a 200 —
+        /// or a release missing its tag or link — would read as "nothing
+        /// newer". It is no answer, and must be reported as none.
+        @Test func aReplyWithoutAReadableReleaseIsNoAnswer() async {
+            for body in ["{}", #"{"html_url":"https://example.invalid/r"}"#,
+                         #"{"tag_name":"v2.0"}"#, #"{"tag_name":"latest","html_url":"https://example.invalid/r"}"#] {
+                MockProtocol.response = (200, Data(body.utf8))
+                #expect(await checker().checkResult(currentVersion: "1.0") == .failed)
+            }
+        }
     }
 }
 

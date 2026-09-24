@@ -19,6 +19,11 @@ public struct AvailableUpdate: Equatable, Sendable {
 /// new version exists, so that is all this does: one request, a version
 /// comparison, and a link.
 public struct UpdateChecker: Sendable {
+    /// How often the app looks on its own, after the look at launch. GitHub
+    /// allows sixty unauthenticated calls an hour, so this is nowhere near
+    /// anything.
+    public static let automaticInterval: TimeInterval = 3 * 3600
+
     private let session: URLSession
     private let endpoint: URL
 
@@ -41,6 +46,15 @@ public struct UpdateChecker: Sendable {
     /// a failed update check is not something to interrupt anyone about, and
     /// GitHub answers unauthenticated callers only sixty times an hour.
     public func check(currentVersion: String) async -> AvailableUpdate? {
+        if case .available(let update) = await checkResult(currentVersion: currentVersion) {
+            return update
+        }
+        return nil
+    }
+
+    /// The same look, but telling "nothing newer" apart from "no answer" —
+    /// what someone who pressed a button to ask deserves to hear.
+    public func checkResult(currentVersion: String) async -> UpdateCheckResult {
         var request = URLRequest(url: endpoint)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Headroom-AI/\(currentVersion)", forHTTPHeaderField: "User-Agent")
@@ -48,19 +62,25 @@ public struct UpdateChecker: Sendable {
         guard let (data, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode)
-        else { return nil }
+        else { return .failed }
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        // Every field is optional, so any JSON object decodes — a proxy's
+        // error page sent with a 200 included. A release without a readable
+        // tag and link is no answer, not "nothing newer".
         guard let release = try? decoder.decode(Release.self, from: data),
-              release.draft != true,
-              release.prerelease != true,
               let tag = release.tagName,
-              let link = release.htmlUrl.flatMap(URL.init(string:)),
+              !Self.components(Self.number(from: tag)).isEmpty,
+              let link = release.htmlUrl.flatMap(URL.init(string:))
+        else { return .failed }
+        // A draft or a prerelease is an answer — just not one to act on.
+        guard release.draft != true,
+              release.prerelease != true,
               Self.isNewer(tag, than: currentVersion)
-        else { return nil }
+        else { return .upToDate }
 
-        return AvailableUpdate(version: Self.number(from: tag), url: link)
+        return .available(AvailableUpdate(version: Self.number(from: tag), url: link))
     }
 
     /// Strips a leading "v" and anything that is not part of the number.

@@ -82,6 +82,27 @@ struct SettingsView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Button("Check for updates", action: model.checkForUpdatesNow)
+                    .disabled(model.updateStatus == .checking)
+
+                // A newer release is a link straight to it; everything else is
+                // one quiet line.
+                if case .checked(.available(let update), _) = model.updateStatus,
+                   let line = UpdateStatusLine.text(for: model.updateStatus, currentVersion: model.currentVersion) {
+                    Link(line, destination: update.url)
+                        .font(.system(size: 10))
+                } else if let line = UpdateStatusLine.text(for: model.updateStatus, currentVersion: model.currentVersion) {
+                    Text(line)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(UpdateStatusLine.schedule)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(14)
         // A permission can disappear between sessions, so what the switch

@@ -8,6 +8,12 @@ struct MenuContentView: View {
     /// The measured height of the list. See `list` — without it the panel shows
     /// nothing but its footer.
     @State private var listHeight: CGFloat = 0
+    /// Everything in the panel that is not the list — banners, divider,
+    /// footer — measured so the list knows how much of the screen is its own.
+    @State private var chromeHeight: CGFloat = 0
+    /// The usable height of the screen the panel is actually on — see
+    /// `ScreenHeightReader`.
+    @State private var screenHeight: CGFloat?
 
     /// Where every cell and every section header currently sits, so a drag can
     /// tell what it is over.
@@ -68,16 +74,22 @@ struct MenuContentView: View {
                 if showingSettings {
                     SettingsView(model: model, close: { showingSettings = false })
                 } else {
-                    updateBanner
-                    storeBanner
-                    banner
+                    VStack(alignment: .leading, spacing: 0) {
+                        updateBanner
+                        storeBanner
+                        banner
+                    }
+                    .background(measuring(ChromeHeight.self))
                     if model.accounts.isEmpty {
                         emptyState
                     } else {
                         list
                     }
-                    Divider()
-                    footer
+                    VStack(alignment: .leading, spacing: 0) {
+                        Divider()
+                        footer
+                    }
+                    .background(measuring(ChromeHeight.self))
                 }
             }
             .frame(width: panelWidth)
@@ -89,6 +101,12 @@ struct MenuContentView: View {
             // half-finished drag came back on the next open as a cell stuck in the
             // air, offset by a translation from minutes ago.
             .onDisappear { releaseDrag() }
+            // Here, on the panel, because the banners and the footer are the
+            // list's siblings: a preference only travels up to ancestors.
+            .onPreferenceChange(ChromeHeight.self) { measured in
+                Task { @MainActor in chromeHeight = measured }
+            }
+            .background(ScreenHeightReader { screenHeight = $0 })
             .onPreferenceChange(CellFrames.self) { cellFrames = $0 }
             .onPreferenceChange(HeaderFrames.self) { headerFrames = $0 }
             // Settings used to be a sheet, which stayed open behind the panel: the
@@ -296,11 +314,23 @@ struct MenuContentView: View {
         // measure zero points). So we measure the content and set the height
         // directly.
         //
-        // The upper bound stays: enough accounts still run past the screen, and
-        // without scrolling the lower cells and the footer become unreachable.
-        .frame(height: min(max(listHeight, 1), 460))
+        // The list grows with its content until the panel would run past the
+        // bottom of the screen, and only then scrolls — see `PanelHeight`.
+        // Without the bound, enough accounts would push the lower cells and
+        // the footer off the screen, out of reach.
+        .frame(height: PanelHeight.list(
+            content: listHeight,
+            chrome: chromeHeight,
+            screen: screenHeight ?? NSScreen.main?.visibleFrame.height ?? 800
+        ))
         .onPreferenceChange(ContentHeight.self) { measured in
             Task { @MainActor in listHeight = measured }
+        }
+    }
+
+    private func measuring<Key: PreferenceKey>(_ key: Key.Type) -> some View where Key.Value == CGFloat {
+        GeometryReader { geometry in
+            Color.clear.preference(key: key, value: geometry.size.height)
         }
     }
 
@@ -534,5 +564,72 @@ private struct ContentHeight: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// The banners above the list and the footer below it, added together.
+private struct ChromeHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value += nextValue()
+    }
+}
+
+/// Reports the usable height of the screen the panel's own window is on.
+///
+/// `NSScreen.main` is the screen of the key window, which with two displays
+/// can be the other one — a list sized for a tall external monitor would then
+/// run off the bottom of the laptop screen whose menu bar was clicked. Read
+/// again whenever the window moves to another screen or the screen's usable
+/// area changes.
+private struct ScreenHeightReader: NSViewRepresentable {
+    let report: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> Probe {
+        Probe(report: report)
+    }
+
+    func updateNSView(_ nsView: Probe, context: Context) {
+        nsView.report = report
+    }
+
+    final class Probe: NSView {
+        var report: (CGFloat) -> Void
+        private var observers: [NSObjectProtocol] = []
+
+        init(report: @escaping (CGFloat) -> Void) {
+            self.report = report
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        // The observer is dropped here, not in `deinit`: leaving the window
+        // calls this with `window == nil` first, and the closure only holds
+        // this view weakly.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers = []
+            guard let window else { return }
+            // Moving to another screen, and the same screen changing its usable
+            // area — a different resolution, the Dock resized or moved.
+            let triggers: [(Notification.Name, Any?)] = [
+                (NSWindow.didChangeScreenNotification, window),
+                (NSApplication.didChangeScreenParametersNotification, nil),
+            ]
+            observers = triggers.map { name, object in
+                NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.send() }
+                }
+            }
+            send()
+        }
+
+        private func send() {
+            guard let height = window?.screen?.visibleFrame.height else { return }
+            // Out of the view update this may be called from.
+            DispatchQueue.main.async { [report] in report(height) }
+        }
     }
 }

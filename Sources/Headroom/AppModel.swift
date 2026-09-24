@@ -162,21 +162,48 @@ final class AppModel {
         NSWorkspace.shared.open(update.url)
     }
 
-    /// Checked at launch and every six hours after. GitHub allows sixty
-    /// unauthenticated calls an hour, so this is nowhere near anything, and a
-    /// failed check is silent by design.
-    private static let updateCheckInterval: TimeInterval = 6 * 3600
+    /// Where the update check stands, for the line under the button in
+    /// Settings.
+    private(set) var updateStatus: UpdateStatus = .notChecked
     private var lastUpdateCheck: Date?
 
+    /// Checked at launch and every `UpdateChecker.automaticInterval` after. A
+    /// failed automatic check is silent by design; the panel only ever speaks
+    /// up about a newer release.
     private func checkForUpdateIfDue() async {
-        let now = Date()
-        if let last = lastUpdateCheck, now.timeIntervalSince(last) < Self.updateCheckInterval {
+        if let last = lastUpdateCheck, Date().timeIntervalSince(last) < UpdateChecker.automaticInterval {
             return
         }
-        lastUpdateCheck = now
-        guard let found = await UpdateChecker().check(currentVersion: currentVersion) else { return }
-        guard preferences.dismissedUpdateVersion != found.version else { return }
-        availableUpdate = found
+        await checkForUpdate(asked: false)
+    }
+
+    /// The "Check for updates" button. Unlike the automatic check, it shows a
+    /// release the banner was dismissed for — whoever presses it is asking
+    /// about exactly that.
+    func checkForUpdatesNow() {
+        Task { await checkForUpdate(asked: true) }
+    }
+
+    private func checkForUpdate(asked: Bool) async {
+        // One look at a time: the automatic check and a press of the button
+        // can land together, and two answers racing for the same line would
+        // only flicker.
+        guard updateStatus != .checking else { return }
+        let previous = updateStatus
+        updateStatus = .checking
+        lastUpdateCheck = Date()
+        let result = await UpdateChecker().checkResult(currentVersion: currentVersion)
+        // An automatic check that got no answer keeps what Settings last said,
+        // rather than replacing a good answer with a shrug nobody asked for.
+        if case .failed = result, !asked {
+            updateStatus = previous
+            return
+        }
+        updateStatus = .checked(result, at: Date())
+        guard case .available(let found) = result else { return }
+        if asked || preferences.dismissedUpdateVersion != found.version {
+            availableUpdate = found
+        }
     }
 
     private let preferences = Preferences()
