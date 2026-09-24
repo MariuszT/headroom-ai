@@ -26,6 +26,7 @@ extension NetworkTests {
             #expect(profile.email == "someone@example.com")
             #expect(profile.plan == "default_claude_max_20x")
             #expect(profile.organizationName == "Org")
+            #expect(profile.organizationUUID == "o-1")
         }
 
         @Test func sendsTheRequiredHeaders() async throws {

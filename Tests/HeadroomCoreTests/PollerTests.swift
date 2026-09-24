@@ -747,3 +747,21 @@ private struct FailingSecretStore: SecretStore {
 
     #expect(collected.order == [subject.id])
 }
+
+/// A failed check falls back to the last reading — and that has to include the
+/// resets, or the reset line would vanish every time a check fails.
+@Test func theLastKnownValueKeepsItsResets() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let subject = account()
+    try store.upsert(subject)
+    let resets = ResetCredits(
+        available: 1, expiresAt: nil, clears: ["5 hours"],
+        usableNow: true, blockedReason: nil, claimID: "g-1"
+    )
+    let poller = Poller(store: store, providers: [.anthropic: StubUsage(result: .failure(UsageError.http(500)))])
+    await poller.loadCache([subject.id: usage(10).replacingResets(resets)])
+
+    let result = await poller.refresh(account: subject)
+
+    #expect(result.resets == resets)
+}

@@ -11,6 +11,12 @@ import Foundation
 /// not fix it.
 final class MockProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var response: (Int, Data) = (200, Data())
+    /// Per-path answers, checked before `response` — for clients that make
+    /// more than one request in a single call. Keyed by `url.path`.
+    nonisolated(unsafe) static var routes: [String: (Int, Data)] = [:]
+    nonisolated(unsafe) static var requestedPaths: [String] = []
+    nonisolated(unsafe) static var lastURL: URL? = nil
+    nonisolated(unsafe) static var lastMethod: String? = nil
     nonisolated(unsafe) static var lastHeaders: [String: String] = [:]
     /// The body of the last request. Foundation routinely moves `httpBody` into
     /// `httpBodyStream` before a request reaches `URLProtocol`, so reading
@@ -23,13 +29,30 @@ final class MockProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         Self.lastHeaders = request.allHTTPHeaderFields ?? [:]
         Self.lastBody = Self.extractBody(request)
-        let (statusCode, data) = Self.response
+        Self.lastURL = request.url
+        Self.lastMethod = request.httpMethod
+        let path = request.url?.path ?? ""
+        Self.requestedPaths.append(path)
+        let (statusCode, data) = Self.routes[path] ?? Self.response
         let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+
+    /// Back to a blank mock. Tests that set `routes` call this first and in a
+    /// `defer`, because older tests only set `response` and would otherwise be
+    /// answered by a route left behind.
+    static func reset() {
+        response = (200, Data())
+        routes = [:]
+        requestedPaths = []
+        lastURL = nil
+        lastMethod = nil
+        lastHeaders = [:]
+        lastBody = nil
+    }
 
     private static func extractBody(_ request: URLRequest) -> Data? {
         if let data = request.httpBody { return data }
@@ -109,6 +132,18 @@ extension NetworkTests {
             await #expect(throws: UsageError.unauthorized) {
                 _ = try await AnthropicUsageClient(session: mockSession()).fetch(account: account)
             }
+        }
+
+        /// Without `cedar_ember=1` the block comes back `null`, and the panel
+        /// would never learn that a reset exists.
+        @Test func anthropicAsksForTheResetBlock() async throws {
+            MockProtocol.reset()
+            defer { MockProtocol.reset() }
+            MockProtocol.response = (200, Data(#"{"five_hour":{"utilization":7}}"#.utf8))
+            _ = try await AnthropicUsageClient(session: mockSession()).fetch(account: account)
+            let query = try #require(MockProtocol.lastURL?.query)
+            #expect(query.contains("cedar_ember=1"))
+            #expect(query.contains("skip_spend=1"))
         }
 
         @Test func codexSendsTheAccountIdentifierHeader() async throws {

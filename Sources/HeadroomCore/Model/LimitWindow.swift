@@ -28,19 +28,24 @@ public struct AccountUsage: Equatable, Sendable {
     public let scoped: [LimitWindow]
     public let fetchedAt: Date
     public let staleness: Staleness
+    /// Banked limit resets, when the provider reported any. `nil` is both "none"
+    /// and "nothing known" — the row shows nothing either way.
+    public let resets: ResetCredits?
 
     public init(
         session: LimitWindow?,
         weekly: LimitWindow?,
         scoped: [LimitWindow],
         fetchedAt: Date,
-        staleness: Staleness
+        staleness: Staleness,
+        resets: ResetCredits? = nil
     ) {
         self.session = session
         self.weekly = weekly
         self.scoped = scoped
         self.fetchedAt = fetchedAt
         self.staleness = staleness
+        self.resets = resets
     }
 
     /// Every window there is anything to say about, in the order the panel
@@ -71,5 +76,48 @@ public struct AccountUsage: Equatable, Sendable {
         // answer 0, which is the reassuring direction.
         guard !windows.isEmpty else { return nil }
         return worstPercent
+    }
+
+    /// This reading, labelled no fresher than `shown` — what the row displayed
+    /// before a reset attempt.
+    ///
+    /// A reset attempt answers from the poller's cache, and the cache only
+    /// ever holds successful reads, so its answer always says `.fresh`.
+    /// Written over a row that was showing old numbers after a failed check,
+    /// that label would claim they had just been confirmed — for as long as
+    /// the backoff keeps the next check away. A reset attempt is not a check.
+    public func keepingStaleness(of shown: AccountUsage?) -> AccountUsage {
+        guard staleness == .fresh, let shown, shown.staleness != .fresh else { return self }
+        return AccountUsage(
+            session: session, weekly: weekly, scoped: scoped,
+            fetchedAt: fetchedAt, staleness: .cached(since: fetchedAt), resets: resets
+        )
+    }
+
+    public func replacingResets(_ resets: ResetCredits?) -> AccountUsage {
+        AccountUsage(
+            session: session, weekly: weekly, scoped: scoped,
+            fetchedAt: fetchedAt, staleness: staleness, resets: resets
+        )
+    }
+
+    /// The reading as it stands straight after a reset was spent, before the
+    /// provider can be asked again (see `Poller.minimumInterval`). The named
+    /// windows drop to zero and lose their reset time — the old one no longer
+    /// applies and the new one is not known yet.
+    public func applyingReset(clearing labels: [String], remaining: ResetCredits?) -> AccountUsage {
+        func cleared(_ window: LimitWindow?) -> LimitWindow? {
+            guard let window else { return nil }
+            guard labels.contains(window.label) else { return window }
+            return LimitWindow(percent: 0, resetsAt: nil, label: window.label)
+        }
+        return AccountUsage(
+            session: cleared(session),
+            weekly: cleared(weekly),
+            scoped: scoped.compactMap { cleared($0) },
+            fetchedAt: fetchedAt,
+            staleness: staleness,
+            resets: remaining
+        )
     }
 }

@@ -18,17 +18,22 @@ public struct AnthropicProfile: Sendable, Equatable {
     /// disagree exactly in the case worth explaining: a login that pays for a
     /// subscription whose token was issued for its API organisation instead.
     public let hasSubscription: Bool
+    /// The organisation's id — where a banked limit reset is claimed. See
+    /// `AnthropicResetClient`.
+    public let organizationUUID: String?
 
     public init(
         email: String,
         plan: String?,
         organizationName: String? = nil,
-        hasSubscription: Bool = false
+        hasSubscription: Bool = false,
+        organizationUUID: String? = nil
     ) {
         self.email = email
         self.plan = plan
         self.organizationName = organizationName
         self.hasSubscription = hasSubscription
+        self.organizationUUID = organizationUUID
     }
 }
 
@@ -47,6 +52,7 @@ public struct AnthropicProfileClient: Sendable {
             let hasClaudePro: Bool?
         }
         struct Organization: Decodable {
+            let uuid: String?
             let name: String?
             let rateLimitTier: String?
         }
@@ -87,7 +93,8 @@ public struct AnthropicProfileClient: Sendable {
             plan: result.organization?.rateLimitTier,
             organizationName: result.organization?.name,
             hasSubscription: (result.account?.hasClaudeMax ?? false)
-                || (result.account?.hasClaudePro ?? false)
+                || (result.account?.hasClaudePro ?? false),
+            organizationUUID: result.organization?.uuid
         )
     }
 }

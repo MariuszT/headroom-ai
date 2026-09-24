@@ -13,6 +13,7 @@ public actor Poller {
     private let store: AccountStore
     private let providers: [Provider: any UsageProvider]
     private let oauth: [Provider: any OAuthProvider]
+    private let redeemers: [Provider: any ResetRedeemer]
     /// The clock, injected from outside — plain `Date()` in production, a
     /// controllable clock in tests, so backoff windows measured in minutes can
     /// be moved without a real `Task.sleep`.
@@ -28,16 +29,37 @@ public actor Poller {
     /// has just started returning 429) would otherwise have a floor of zero and
     /// every forced refresh would hammer it.
     private var lastAttempt: [String: Date] = [:]
+    /// Accounts with a reset claim on the wire. The actor lets a second call in
+    /// at every `await`, so without this two presses could spend two resets.
+    private var redeemingResets: Set<String> = []
+    /// When a reset was last applied to an account's cache — set in
+    /// `redeemReset`, read in `refresh`. A usage read already in flight when
+    /// the claim lands started from the pre-reset numbers and can still land
+    /// AFTER the claim's own correction, which would silently undo it. A read
+    /// whose start predates this timestamp is known stale for that reason
+    /// alone, whatever the provider answered.
+    private var resetAppliedAt: [String: Date] = [:]
+    /// Token renewals on the wire, one per account at most. The actor lets a
+    /// second call in at the `await` on the OAuth provider, and a check and a
+    /// reset claim (or two checks) can both find the same token about to
+    /// expire. Anthropic rotates the refresh token on every renewal, so a
+    /// second renewal sent with the same refresh token gets `invalid_grant` —
+    /// and would then store its stale tokens with `needsReauth = true` over
+    /// the good ones the first renewal had just saved. A later caller waits
+    /// for the renewal already in flight and takes its result instead.
+    private var renewals: [String: Task<TokenCheck, Never>] = [:]
 
     public init(
         store: AccountStore,
         providers: [Provider: any UsageProvider],
         oauth: [Provider: any OAuthProvider] = [:],
+        redeemers: [Provider: any ResetRedeemer] = [:],
         clock: @escaping @Sendable () async -> Date = { Date() }
     ) {
         self.store = store
         self.providers = providers
         self.oauth = oauth
+        self.redeemers = redeemers
         self.clock = clock
     }
 
@@ -75,45 +97,25 @@ public actor Poller {
         nextDueAt[account.id] ?? .distantPast
     }
 
+    /// The account's own last-attempt timestamp — exposed so `AppModel` can
+    /// fold it into the delay before its post-reset confirming check (see
+    /// `redeemReset` there): a read already on the wire when a reset lands can
+    /// record a `lastAttempt` more recent than the claim's own return, and
+    /// timing the confirming check from the claim alone could still land it
+    /// inside that read's 180-second floor.
+    public func lastAttempt(for id: String) -> Date? {
+        lastAttempt[id]
+    }
+
     /// `interval` is the gap between refreshes configured by the user (see
     /// `AppModel.intervalSeconds`); it is clamped to `minimumInterval` here
     /// anyway — the 180-second floor holds whether or not the caller (for
     /// instance `AppModel`) remembered to clamp it.
     public func refresh(account: Account, interval: TimeInterval = Poller.baseInterval) async -> AccountUsage {
-        var current = account
-
-        if Self.needsTokenRefresh(account: current, now: await clock()), let provider = oauth[account.provider] {
-            do {
-                let tokens = try await provider.refresh(refreshToken: current.refreshToken)
-                current.accessToken = tokens.accessToken
-                current.refreshToken = tokens.refreshToken
-                current.expiresAt = tokens.expiresAt
-                current.needsReauth = false
-                do {
-                    // `update`, not `upsert`: a check can still be in flight
-                    // when the user deletes the account, and appending it back
-                    // here would resurrect it. A `false` return is that case —
-                    // not a failure, because there is nothing left to store the
-                    // rotated token on.
-                    try store.update(current)
-                } catch {
-                    // Anthropic rotates the refresh token on EVERY refresh, so
-                    // the old one is already dead on the server. Failing to
-                    // store the new one means that in a moment we will hold no
-                    // working token at all, which is itself a failure deserving
-                    // backoff and a diagnosis in the row — not a silent `try?`
-                    // that would hide it.
-                    await increaseBackoff(account.id)
-                    return await lastValueOr(account: account, description: "Could not save the renewed token.")
-                }
-            } catch OAuthError.invalidGrant {
-                current.needsReauth = true
-                try? store.update(current)
-                return await lastValueOr(account: account, description: "Rejected by the provider. Add this account again to renew it.")
-            } catch {
-                await increaseBackoff(account.id)
-                return await lastValueOr(account: account, description: "Could not renew the token.")
-            }
+        let current: Account
+        switch await freshToken(for: account) {
+        case .ready(let renewed): current = renewed
+        case .failed(let fallback): return fallback
         }
 
         guard let provider = providers[account.provider] else {
@@ -129,9 +131,18 @@ public actor Poller {
 
         do {
             let result = try await provider.fetch(account: current)
-            cache[account.id] = result
             failureCount[account.id] = 0
             nextDueAt[account.id] = now.addingTimeInterval(max(interval, Self.minimumInterval))
+            // This fetch started (`now`, captured above) before a reset was
+            // applied to this account's cache — its numbers are the pre-reset
+            // ones the claim already corrected, so writing them back would
+            // silently spend the reset a second time in the row's own display.
+            // Treated as an ordinary success otherwise (no backoff): the read
+            // itself worked fine, it is simply superseded.
+            if let appliedAt = resetAppliedAt[account.id], appliedAt > now {
+                return cache[account.id] ?? result
+            }
+            cache[account.id] = result
             return result
         } catch UsageError.rateLimited {
             await increaseBackoff(account.id)
@@ -172,6 +183,86 @@ public actor Poller {
         }
     }
 
+    private enum TokenCheck: Sendable {
+        case ready(Account)
+        /// Renewal failed; carries the reading the row should show instead.
+        /// It is per account, not per caller, so every caller that waited on
+        /// the same renewal can be handed the same one.
+        case failed(AccountUsage)
+    }
+
+    /// Renews the token when it is about to expire — shared by reading and by
+    /// claiming a reset, so there is one copy of the rotation rules.
+    private func freshToken(for account: Account) async -> TokenCheck {
+        // The clock is read first because it is the only suspension point
+        // here. Everything after it — joining a renewal in flight, reading the
+        // store, starting a renewal — then happens in one uninterrupted
+        // stretch, so a renewal that starts OR finishes while this caller is
+        // suspended is always seen: joined if still running, and its stored
+        // result read if already done.
+        let now = await clock()
+        if let inFlight = renewals[account.id] {
+            return await inFlight.value
+        }
+        // The caller's copy can predate a renewal that has already finished —
+        // `refreshAll` loads its accounts once for the whole pass, and
+        // `AppModel` holds what it loaded last. Deciding from that copy would
+        // renew again with a refresh token that is already dead, so the
+        // newest stored copy decides. An account missing from the store (or
+        // an unreadable store) falls back to the copy passed in; `update`
+        // below then writes nothing back for it.
+        let newest = (try? store.load())?.first(where: { $0.id == account.id }) ?? account
+        guard Self.needsTokenRefresh(account: newest, now: now), let provider = oauth[account.provider] else {
+            return .ready(newest)
+        }
+        // Unstructured, so it can be shared: the callers that join it only
+        // await its value. It inherits this actor, so its body cannot start
+        // before the task is recorded below.
+        let renewal = Task { await self.renew(newest, with: provider) }
+        renewals[account.id] = renewal
+        let result = await renewal.value
+        renewals[account.id] = nil
+        return result
+    }
+
+    /// The renewal itself — reached only through `freshToken`, which makes
+    /// sure there is never more than one per account at a time.
+    private func renew(_ account: Account, with provider: any OAuthProvider) async -> TokenCheck {
+        var current = account
+        do {
+            let tokens = try await provider.refresh(refreshToken: current.refreshToken)
+            current.accessToken = tokens.accessToken
+            current.refreshToken = tokens.refreshToken
+            current.expiresAt = tokens.expiresAt
+            current.needsReauth = false
+            do {
+                // `update`, not `upsert`: a check can still be in flight
+                // when the user deletes the account, and appending it back
+                // here would resurrect it. A `false` return is that case —
+                // not a failure, because there is nothing left to store the
+                // rotated token on.
+                try store.update(current)
+            } catch {
+                // Anthropic rotates the refresh token on EVERY refresh, so
+                // the old one is already dead on the server. Failing to
+                // store the new one means that in a moment we will hold no
+                // working token at all, which is itself a failure deserving
+                // backoff and a diagnosis in the row — not a silent `try?`
+                // that would hide it.
+                await increaseBackoff(account.id)
+                return .failed(await lastValueOr(account: account, description: "Could not save the renewed token."))
+            }
+        } catch OAuthError.invalidGrant {
+            current.needsReauth = true
+            try? store.update(current)
+            return .failed(await lastValueOr(account: account, description: "Rejected by the provider. Add this account again to renew it."))
+        } catch {
+            await increaseBackoff(account.id)
+            return .failed(await lastValueOr(account: account, description: "Could not renew the token."))
+        }
+        return .ready(current)
+    }
+
     /// Checks one account on demand — the per-account refresh button.
     ///
     /// It behaves like "Check now" narrowed to a single account: the backoff
@@ -193,6 +284,112 @@ public actor Poller {
         }
         failureCount[account.id] = 0
         return await refresh(account: account, interval: interval)
+    }
+
+    /// Spends one banked reset on this account.
+    ///
+    /// Not an attempt for the 180-second floor — that guards the usage
+    /// endpoint, and this is another one. On success the reading is corrected
+    /// here rather than asked for again, because the floor would refuse the
+    /// question; the caller schedules the confirming check (see `AppModel`).
+    public func redeemReset(account: Account) async -> (usage: AccountUsage, result: ResetResult) {
+        let now = await clock()
+        // Both checks and the claim marker sit between the same two
+        // suspension points, so no second call can slip in between them.
+        guard !redeemingResets.contains(account.id) else {
+            return (await currentReading(account), .alreadyInProgress)
+        }
+        guard let credits = cache[account.id]?.resets?.current(now: now), credits.available > 0 else {
+            return (await currentReading(account), .nothingAvailable)
+        }
+        redeemingResets.insert(account.id)
+        defer { redeemingResets.remove(account.id) }
+
+        // `account` is the caller's own copy — `AppModel` hands over what it
+        // last loaded, which can be stale while a `refreshAll` pass is still
+        // running: that pass renews and stores tokens as it goes, but
+        // `AppModel` only reloads its accounts once the whole pass finishes.
+        // With Anthropic rotating the refresh token on every renewal, renewing
+        // from the stale copy fails with `invalid_grant`, and `freshToken`
+        // would then write the STALE tokens plus `needsReauth = true` over the
+        // good ones a concurrent pass just stored. Reading the store again
+        // here — after the guards and the claim marker above, so this adds no
+        // suspension point between them — gets the newest copy instead.
+        guard let stored = (try? store.load())?.first(where: { $0.id == account.id }) else {
+            // Gone from the store entirely — removed while the claim was
+            // queued. There is nothing left to renew or spend a reset on.
+            return (await currentReading(account), .failed)
+        }
+
+        let current: Account
+        switch await freshToken(for: stored) {
+        case .ready(let renewed): current = renewed
+        case .failed(let fallback): return (fallback, .failed)
+        }
+        guard let redeemer = redeemers[account.provider] else {
+            return (await currentReading(account), .failed)
+        }
+
+        do {
+            let outcome = try await redeemer.redeem(account: current, credits: credits, requestID: UUID())
+            // Read fresh, right as the server's answer lands — not the `now`
+            // from the top of this call, which predates the network round
+            // trip to the redeemer: a read that started after this call began
+            // but before the server actually confirmed the reset must still be
+            // caught as stale by `refresh`. Read BEFORE the cache is touched:
+            // the clock is a suspension point, and between writing the
+            // corrected reading and stamping it, a read that started earlier
+            // could land, miss the stamp and put the pre-reset numbers back.
+            let appliedAt = await clock()
+            // Read the cache again: a reading may have landed during the
+            // claim, and the reset belongs on top of the newest numbers.
+            if outcome == .reset, let latest = cache[account.id] {
+                // An Anthropic grant keeps its id across its count; every
+                // OpenAI credit is its own, so the spent one must go. The
+                // Anthropic count spans every grant, so the kept id can
+                // belong to a grant this claim just emptied — a press before
+                // the confirming check replaces the reading is then answered
+                // "already used" at worst, and nothing is spent.
+                let nextClaim = account.provider == .anthropic ? credits.claimID : ""
+                cache[account.id] = latest.applyingReset(
+                    clearing: credits.clears,
+                    remaining: credits.consumingOne(nextClaimID: nextClaim)
+                )
+                // Stamped in the same uninterrupted stretch as the write above.
+                resetAppliedAt[account.id] = appliedAt
+            }
+            return (await currentReading(account), .outcome(outcome))
+        } catch UsageError.unauthorized, UsageError.organizationNotAllowed {
+            // Unlike the usage endpoint, the claim sits outside `/api/oauth/` —
+            // it is undocumented, and its 401/403 says nothing reliable about
+            // the token: a permission this one endpoint refuses is not the same
+            // as a dead token, and usage reading can still work fine. Flagging
+            // `needsReauth` here would hide a working account's bars behind
+            // "Add this account again" for no reason; the next usage read is
+            // what actually knows whether the token is good, so it is left to
+            // decide, and nothing is written to the store here.
+            return (await currentReading(account), .failed)
+        } catch is URLError {
+            // The claim may have reached the server before the connection
+            // went — claiming it was not used would be a guess.
+            return (await currentReading(account), .unconfirmed)
+        } catch ResetError.unrecognizedResponse {
+            return (await currentReading(account), .unconfirmed)
+        } catch UsageError.http(let code) where code >= 500 {
+            // Same reasoning as a dropped connection: a 5xx can be the
+            // server failing AFTER it already recorded the claim, so
+            // "unspent" would be a guess too.
+            return (await currentReading(account), .unconfirmed)
+        } catch {
+            return (await currentReading(account), .failed)
+        }
+    }
+
+    /// The reading as the cache holds it, untouched — a reset attempt is not a
+    /// check, so it must not mark anything stale.
+    private func currentReading(_ account: Account) async -> AccountUsage {
+        if let cached = cache[account.id] { return cached }
+        return await lastValueOr(account: account, description: "Nothing known about this account yet.")
     }
 
     /// Requests are spread out in time so that seventeen accounts do not hit
@@ -274,7 +471,8 @@ public actor Poller {
                 weekly: previous.weekly,
                 scoped: previous.scoped,
                 fetchedAt: previous.fetchedAt,
-                staleness: .cached(since: previous.fetchedAt)
+                staleness: .cached(since: previous.fetchedAt),
+                resets: previous.resets
             )
         }
         // No windows at all rather than empty ones: nothing is known here, and

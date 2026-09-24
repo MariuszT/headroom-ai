@@ -1,8 +1,17 @@
 import Foundation
 
 public enum HeadroomConstants {
-    public static let anthropicUsageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    /// `cedar_ember=1` asks for the banked limit resets as well; without it the
+    /// block comes back `null`. `skip_spend=1` is what the CLI sends alongside
+    /// it and leaves out the spend summary nothing here reads.
+    public static let anthropicUsageURL = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1")!
     public static let anthropicProfileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
+    /// Where a banked limit reset is claimed. Not under `/api/oauth/` like the
+    /// readers, but it takes the same OAuth token — this is the path Claude
+    /// Code 2.1.281 posts to from `/limit-reset`.
+    public static func anthropicResetURL(organizationUUID: String) -> URL {
+        URL(string: "https://api.anthropic.com/api/organizations/\(organizationUUID)/reset_rate_limits")!
+    }
     /// The subscription sign-in, not the API console one. Claude Code carries
     /// BOTH — `CONSOLE_AUTHORIZE_URL` on platform.claude.com and
     /// `CLAUDE_AI_AUTHORIZE_URL` here — and they lead to different places: the
@@ -30,6 +39,10 @@ public enum HeadroomConstants {
     public static let anthropicUserAgent = "claude-cli/2.1.260 (external, cli)"
 
     public static let codexUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    /// The banked limit resets one by one, with their expiry. Asked only when
+    /// the usage summary says there are some.
+    public static let codexResetCreditsURL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+    public static let codexConsumeResetURL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")!
     public static let openAIAuthorizeURL = URL(string: "https://auth.openai.com/oauth/authorize")!
     public static let openAITokenURL = URL(string: "https://auth.openai.com/oauth/token")!
     public static let openAIClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -66,14 +79,13 @@ public protocol UsageProvider: Sendable {
     func fetch(account: Account) async throws -> AccountUsage
 }
 
-extension UsageProvider {
-    /// Shared mapping from status code to domain error — 429 and 401 have very
-    /// different consequences for the schedule than an ordinary failure.
-    ///
+/// Status code to domain error, shared by everything that talks to the
+/// providers — usage readers and reset claims alike.
+enum HTTPStatus {
     /// `body` is needed only for 403: the code alone does not distinguish a
     /// token that needs renewing from an organisation Anthropic will not serve
     /// over OAuth at all.
-    func checkStatus(_ response: URLResponse, body: Data = Data()) throws {
+    static func check(_ response: URLResponse, body: Data = Data()) throws {
         guard let http = response as? HTTPURLResponse else { return }
         switch http.statusCode {
         case 200..<300: return
@@ -82,6 +94,14 @@ extension UsageProvider {
         case 401, 403: throw UsageError.unauthorized
         default: throw UsageError.http(http.statusCode)
         }
+    }
+}
+
+extension UsageProvider {
+    /// Shared mapping from status code to domain error — 429 and 401 have very
+    /// different consequences for the schedule than an ordinary failure.
+    func checkStatus(_ response: URLResponse, body: Data = Data()) throws {
+        try HTTPStatus.check(response, body: body)
     }
 }
 

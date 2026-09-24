@@ -205,6 +205,10 @@ final class AppModel {
             oauth: [
                 .anthropic: AnthropicOAuth(),
                 .openai: OpenAIOAuth(),
+            ],
+            redeemers: [
+                .anthropic: AnthropicResetClient(),
+                .openai: CodexResetClient(),
             ]
         )
         for provider in Provider.allCases {
@@ -289,12 +293,103 @@ final class AppModel {
             return
         }
         usage[id] = nil
+        resetMessages[id] = nil
+        resetAttempts[id] = nil
         // The renewal lives outside the account (see `Preferences.renewal`), so
         // it does not leave with it — and an id is `provider:email`, which a
         // later sign-in of the same address would reuse, inheriting a date set
         // for an account the user deliberately removed.
         setRenewal(nil, for: id)
         loadAccounts()
+    }
+
+    // MARK: - Limit resets
+
+    /// One sentence about each account's last reset attempt, shown under its
+    /// bars until it has nothing left to say.
+    private(set) var resetMessages: [String: String] = [:]
+    /// Accounts whose reset claim is on the wire — the row greys its buttons.
+    private(set) var redeemingResets: Set<String> = []
+    /// Which attempt currently owns `resetMessages[id]`. Comparing the message
+    /// TEXT to decide whether to clear it (as this used to) lets an earlier
+    /// attempt's timer clear a newer attempt's identical sentence — two
+    /// presses in a row both failing say the exact same words. Tagging each
+    /// attempt with its own id makes "is this still mine to clear" exact
+    /// instead of a coincidence of wording.
+    private var resetAttempts: [String: UUID] = [:]
+
+    func redeemReset(id: String) {
+        guard let account = accounts.first(where: { $0.id == id }), !redeemingResets.contains(id) else { return }
+        redeemingResets.insert(id)
+        resetMessages[id] = nil
+        let attempt = UUID()
+        resetAttempts[id] = attempt
+        Task {
+            let (newUsage, result) = await poller.redeemReset(account: account)
+            redeemingResets.remove(id)
+            // The account can have been removed while the claim was in the
+            // air — `remove(id:)` already cleared its entries, and an id is
+            // `provider:email`, reusable by a later sign-in of the same
+            // address. Writing here would resurrect state for an account
+            // that is gone, or hand it to whoever signs in next.
+            guard accounts.contains(where: { $0.id == id }) else { return }
+            usage[id] = newUsage.keepingStaleness(of: usage[id])
+            let message = ResetLine.message(for: result)
+            resetMessages[id] = message
+            loadAccounts()
+
+            if ResetLine.needsConfirmationCheck(result) {
+                // The refresh loop waits a whole interval between passes, so
+                // the provider's own numbers are asked for here, as soon as
+                // the 180-second floor allows. The message stays until then:
+                // it is what explains the zeroed bars.
+                //
+                // Timing from the claim's own return alone is not enough: a
+                // regular poll can have a read for this very account already
+                // on the wire when the claim lands (see `Poller.refresh` and
+                // `resetAppliedAt`), which records a `lastAttempt` of its own
+                // — possibly closer to "now" than the claim's return time.
+                // Sleeping from the LATER of the two keeps this confirming
+                // call outside the 180-second floor either way, so it is never
+                // waved off with "Checked moments ago" and left to the next
+                // full cycle to notice the confirmed reset.
+                let claimReturnedAt = Date()
+                let earliestConfirmAt = max(claimReturnedAt, await poller.lastAttempt(for: id) ?? claimReturnedAt)
+                    .addingTimeInterval(Poller.minimumInterval + 5)
+                let delay = earliestConfirmAt.timeIntervalSinceNow
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                if let current = accounts.first(where: { $0.id == id }) {
+                    let confirmed = await poller.refreshOne(account: current, interval: intervalSeconds)
+                    // Re-checked for the same reason as the guard above: the
+                    // account may have been removed while THIS await was in
+                    // flight too.
+                    guard accounts.contains(where: { $0.id == id }) else { return }
+                    // A regular poll can land in between and put this very
+                    // call inside the 180-second floor — `refreshOne` then
+                    // hands back the cache relabelled `.cached(since:)`
+                    // instead of confirming anything. Writing that would mark
+                    // an already-fresh reading stale for no reason: the
+                    // regular poll that tripped the floor already delivered
+                    // newer numbers, and if the claim genuinely failed to take
+                    // effect, the next poll will surface that on its own.
+                    if confirmed.staleness == .fresh {
+                        usage[id] = confirmed
+                    }
+                    loadAccounts()
+                }
+            } else {
+                try? await Task.sleep(for: .seconds(10))
+            }
+            // Only our own sentence — a newer attempt may have replaced it.
+            // Tagged by id rather than by comparing text (see `resetAttempts`),
+            // so two attempts landing the same wording can't clear each other.
+            if resetAttempts[id] == attempt {
+                resetMessages[id] = nil
+                resetAttempts[id] = nil
+            }
+        }
     }
 
     /// When each account's plan renews, mirrored here for the same reason as

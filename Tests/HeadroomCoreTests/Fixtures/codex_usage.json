@@ -20,5 +20,6 @@
     }
   },
   "model_usage": {},
-  "credits": { "has_credits": false, "unlimited": false, "balance": null }
+  "credits": { "has_credits": false, "unlimited": false, "balance": null },
+  "rate_limit_reset_credits": { "available_count": 1, "applicable_available_count": 0 }
 }

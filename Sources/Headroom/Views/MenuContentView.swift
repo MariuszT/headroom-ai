@@ -253,7 +253,10 @@ struct MenuContentView: View {
                                     renewal: model.renewals[account.id],
                                     refresh: { model.refreshAccount(id: account.id) },
                                     remove: { model.remove(id: account.id) },
-                                    editRenewal: { editingRenewalFor = account.id }
+                                    editRenewal: { editingRenewalFor = account.id },
+                                    resetMessage: model.resetMessages[account.id],
+                                    isRedeemingReset: model.redeemingResets.contains(account.id),
+                                    redeemReset: { model.redeemReset(id: account.id) }
                                 )
                                 .modifier(Lift(
                                     held: dragging == account.id,

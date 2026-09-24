@@ -23,12 +23,19 @@ struct AccountRowView: View {
     /// Opens the renewal editor, which is drawn over the panel rather than
     /// inside this cell — see `MenuContentView.renewalEditor`.
     let editRenewal: () -> Void
+    /// What the last reset attempt came to, until `AppModel` clears it.
+    let resetMessage: String?
+    let isRedeemingReset: Bool
+    let redeemReset: () -> Void
 
     /// Removing an account means signing in through a browser again to undo it,
     /// so a single stray click must not be enough. The confirmation is inline
     /// rather than a dialog: a menu bar panel cannot host one reliably — that
     /// is the same trap that made Settings unclosable.
     @State private var confirmingRemoval = false
+    /// Spending a reset cannot be undone, so it asks first — inline, for the
+    /// same reason as removal.
+    @State private var confirmingReset = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -46,6 +53,19 @@ struct AccountRowView: View {
                         .foregroundStyle(.orange)
                 }
 
+                if let resets {
+                    Button { confirmingReset = true } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.tertiary)
+                    .help(resets.usableNow
+                        ? "Reset \(account.email)'s limits"
+                        : (resets.blockedReason ?? "Not usable right now"))
+                    .disabled(!resets.usableNow || confirmingRemoval || confirmingReset || isRedeemingReset)
+                }
+
                 Button(action: editRenewal) {
                     Image(systemName: renewal == nil ? "calendar" : "calendar.badge.clock")
                         .font(.system(size: 11))
@@ -57,7 +77,7 @@ struct AccountRowView: View {
                 .help(renewal == nil
                     ? "Set when \(account.email) renews"
                     : "Change when \(account.email) renews")
-                .disabled(confirmingRemoval)
+                .disabled(confirmingRemoval || confirmingReset)
 
                 Button(action: refresh) {
                     Image(systemName: "arrow.clockwise")
@@ -66,7 +86,7 @@ struct AccountRowView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.tertiary)
                 .help("Check \(account.email) now")
-                .disabled(confirmingRemoval)
+                .disabled(confirmingRemoval || confirmingReset)
 
                 Button { confirmingRemoval = true } label: {
                     Image(systemName: "trash")
@@ -75,11 +95,13 @@ struct AccountRowView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.tertiary)
                 .help("Remove \(account.email)")
-                .disabled(confirmingRemoval)
+                .disabled(confirmingRemoval || confirmingReset)
             }
 
             if confirmingRemoval {
                 confirmation
+            } else if confirmingReset, let resets {
+                resetConfirmation(resets)
             } else {
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     WindowLine(window: window)
@@ -95,6 +117,21 @@ struct AccountRowView: View {
                         .lineLimit(1)
                 }
 
+                if let resets {
+                    Text(ResetLine.text(for: resets))
+                        .font(.system(size: 10))
+                        .foregroundStyle(ResetLine.isUrgent(resets) ? Color.orange : .secondary)
+                        .lineLimit(1)
+                }
+
+                if let resetMessage {
+                    Text(resetMessage)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if let note {
                     Text(note)
                         .font(.system(size: 10))
@@ -106,7 +143,23 @@ struct AccountRowView: View {
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
-        .contextMenu { Button("Remove account") { confirmingRemoval = true } }
+        .contextMenu {
+            Button("Remove account") { confirmingRemoval = true }
+                .disabled(confirmingReset || isRedeemingReset)
+        }
+        // Closes once the claim has come back; the outcome then shows as
+        // `resetMessage` under the bars.
+        .onChange(of: isRedeemingReset) { _, redeeming in
+            if !redeeming { confirmingReset = false }
+        }
+        // A poll landing while the confirmation is open can take `resets` away
+        // entirely — none left, expired, or `needsReauth` flipping true. Left
+        // open, the row would be stuck: every other button disabled by
+        // `confirmingReset`, no `resets` left to draw the confirmation itself,
+        // and no Cancel visible to get out of it.
+        .onChange(of: resets == nil) { _, gone in
+            if gone { confirmingReset = false }
+        }
     }
 
     private var confirmation: some View {
@@ -120,6 +173,29 @@ struct AccountRowView: View {
             Button("Remove") { remove() }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
+        }
+        .font(.system(size: 10))
+    }
+
+    private func resetConfirmation(_ resets: ResetCredits) -> some View {
+        HStack(spacing: 10) {
+            Text(isRedeemingReset ? "Resetting…" : ResetLine.confirmation(for: resets, usage: usage))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("Cancel") { confirmingReset = false }
+                .buttonStyle(.borderless)
+                .disabled(isRedeemingReset)
+            Button("Reset") { redeemReset() }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.orange)
+                // `resets` can turn unusable (cooldown, paused, …) while the
+                // confirmation sits open — a poll landing in between — and the
+                // button must stop offering to spend something the provider
+                // would refuse.
+                .disabled(isRedeemingReset || !resets.usableNow)
         }
         .font(.system(size: 10))
     }
@@ -144,6 +220,14 @@ struct AccountRowView: View {
 
     private var renewalStatus: RenewalStatus? {
         renewal?.status(now: Date())
+    }
+
+    /// The resets worth offering: none for an account that has to sign in
+    /// again, and none past their expiry — a cached reading can outlive them
+    /// (see `ResetCredits.current(now:)`).
+    private var resets: ResetCredits? {
+        guard !account.needsReauth else { return nil }
+        return usage?.resets?.current()
     }
 }
 
