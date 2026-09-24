@@ -12,8 +12,14 @@ struct MenuContentView: View {
     /// footer — measured so the list knows how much of the screen is its own.
     @State private var chromeHeight: CGFloat = 0
     /// The usable height of the screen the panel is actually on — see
-    /// `ScreenHeightReader`.
+    /// `PanelWindowBridge`.
     @State private var screenHeight: CGFloat?
+    /// The height the whole panel wants, measured so its window can be shrunk
+    /// to it — see `PanelWindowFit`.
+    @State private var panelHeight: CGFloat = 0
+    /// The renewal editor's own height. It is a layer over the panel, outside
+    /// the stack `panelHeight` measures, and can be taller than a short list.
+    @State private var editorHeight: CGFloat = 0
 
     /// Where every cell and every section header currently sits, so a drag can
     /// tell what it is over.
@@ -69,7 +75,11 @@ struct MenuContentView: View {
     @State private var editingRenewalFor: String?
 
     var body: some View {
-        ZStack {
+        // Top-aligned: when the renewal editor makes the window taller than
+        // the panel, the panel stays under the menu bar instead of dropping by
+        // half the difference. The editor's layer fills the window on its own,
+        // so its card stays centred.
+        ZStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 0) {
                 if showingSettings {
                     SettingsView(model: model, close: { showingSettings = false })
@@ -93,6 +103,7 @@ struct MenuContentView: View {
                 }
             }
             .frame(width: panelWidth)
+            .background(measuring(PanelContentHeight.self))
             .coordinateSpace(.named(Self.panelSpace))
             // The panel can vanish mid-drag — it closes the moment anything else
             // takes focus — and `onEnded` never arrives. Everything the gesture set
@@ -106,7 +117,12 @@ struct MenuContentView: View {
             .onPreferenceChange(ChromeHeight.self) { measured in
                 Task { @MainActor in chromeHeight = measured }
             }
-            .background(ScreenHeightReader { screenHeight = $0 })
+            .onPreferenceChange(PanelContentHeight.self) { measured in
+                Task { @MainActor in panelHeight = measured }
+            }
+            .background(PanelWindowBridge(
+                contentSize: CGSize(width: panelWidth, height: windowHeight)
+            ) { screenHeight = $0 })
             .onPreferenceChange(CellFrames.self) { cellFrames = $0 }
             .onPreferenceChange(HeaderFrames.self) { headerFrames = $0 }
             // Settings used to be a sheet, which stayed open behind the panel: the
@@ -144,9 +160,27 @@ struct MenuContentView: View {
                 },
                 cancel: { editingRenewalFor = nil }
             )
+            .background(measuring(EditorHeight.self))
         }
         .transition(.opacity)
+        .onPreferenceChange(EditorHeight.self) { measured in
+            Task { @MainActor in editorHeight = measured }
+        }
     }
+
+    /// What the window should be: the panel, or the renewal editor over it when
+    /// that is taller — with room around the editor's card so it does not
+    /// touch the window's edges.
+    private var windowHeight: CGFloat {
+        // Only while the editor is actually drawn: it disappears when its
+        // account does, even though `editingRenewalFor` still names it.
+        guard let id = editingRenewalFor, model.accounts.contains(where: { $0.id == id }),
+              editorHeight > 0
+        else { return panelHeight }
+        return max(panelHeight, editorHeight + 2 * Self.editorMargin)
+    }
+
+    private static let editorMargin: CGFloat = 12
 
     // MARK: - Parts
 
@@ -567,6 +601,22 @@ private struct ContentHeight: PreferenceKey {
     }
 }
 
+/// The whole panel's natural height — what its window should be.
+private struct PanelContentHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// The renewal editor's card, measured on its own.
+private struct EditorHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// The banners above the list and the footer below it, added together.
 private struct ChromeHeight: PreferenceKey {
     static let defaultValue: CGFloat = 0
@@ -575,14 +625,20 @@ private struct ChromeHeight: PreferenceKey {
     }
 }
 
-/// Reports the usable height of the screen the panel's own window is on.
+/// The panel's hold on its own window, for the two things SwiftUI cannot do
+/// from inside `MenuBarExtra`.
 ///
-/// `NSScreen.main` is the screen of the key window, which with two displays
-/// can be the other one — a list sized for a tall external monitor would then
-/// run off the bottom of the laptop screen whose menu bar was clicked. Read
-/// again whenever the window moves to another screen or the screen's usable
-/// area changes.
-private struct ScreenHeightReader: NSViewRepresentable {
+/// It reports the usable height of the screen the window is on. `NSScreen.main`
+/// is the screen of the key window, which with two displays can be the other
+/// one — a list sized for a tall external monitor would then run off the
+/// bottom of the laptop screen whose menu bar was clicked. Read again whenever
+/// the window moves to another screen or the screen's usable area changes.
+///
+/// And it fits the window to the content's size, which `MenuBarExtra` does
+/// only when the content grows, never when it shrinks — see `PanelWindowFit`.
+private struct PanelWindowBridge: NSViewRepresentable {
+    /// The size to fit the window to.
+    let contentSize: CGSize
     let report: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> Probe {
@@ -591,11 +647,13 @@ private struct ScreenHeightReader: NSViewRepresentable {
 
     func updateNSView(_ nsView: Probe, context: Context) {
         nsView.report = report
+        nsView.request(contentSize)
     }
 
     final class Probe: NSView {
         var report: (CGFloat) -> Void
         private var observers: [NSObjectProtocol] = []
+        private var requested: CGSize?
 
         init(report: @escaping (CGFloat) -> Void) {
             self.report = report
@@ -604,8 +662,8 @@ private struct ScreenHeightReader: NSViewRepresentable {
 
         required init?(coder: NSCoder) { nil }
 
-        // The observer is dropped here, not in `deinit`: leaving the window
-        // calls this with `window == nil` first, and the closure only holds
+        // The observers are dropped here, not in `deinit`: leaving the window
+        // calls this with `window == nil` first, and the closures only hold
         // this view weakly.
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -624,6 +682,33 @@ private struct ScreenHeightReader: NSViewRepresentable {
                 }
             }
             send()
+            apply()
+        }
+
+        /// Sizes the window to a NEW measurement only. SwiftUI calls this on
+        /// every redraw, often still carrying the previous size while the
+        /// content has already changed — acting on that would size the window
+        /// to what the panel used to be. So a size is applied once, when it
+        /// first arrives.
+        func request(_ size: CGSize) {
+            guard size != requested else { return }
+            requested = size
+            apply()
+        }
+
+        /// Deferred out of the SwiftUI update it is called from: resizing the
+        /// window inside it would lay the panel out again mid-pass. Also run
+        /// when the view reaches a window, so a size requested before that is
+        /// not lost.
+        private func apply() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let size = self.requested, let window = self.window else { return }
+                let content = window.contentRect(forFrameRect: window.frame)
+                guard let fitted = PanelWindowFit.frame(
+                    window: content, content: size, screen: window.screen?.visibleFrame
+                ) else { return }
+                window.setFrame(window.frameRect(forContentRect: fitted), display: true)
+            }
         }
 
         private func send() {

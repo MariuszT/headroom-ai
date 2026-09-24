@@ -157,3 +157,13 @@ extension NetworkTests {
         }
     }
 }
+
+/// Anthropic withholds the banked resets from a CLI it considers too old:
+/// `claude-cli/2.1.260` got `ineligible_reason: "cli_version"` on 2026-09-24,
+/// while 2.1.281 got the grant. The header must never fall back below that.
+@Test func theUserAgentIsNewEnoughForResets() throws {
+    let agent = HeadroomConstants.anthropicUserAgent
+    let version = try #require(agent.split(separator: "/").dropFirst().first?.split(separator: " ").first)
+    #expect(agent.hasPrefix("claude-cli/"))
+    #expect(!UpdateChecker.isNewer("2.1.281", than: String(version)))
+}

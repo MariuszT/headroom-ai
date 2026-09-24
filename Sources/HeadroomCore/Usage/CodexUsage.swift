@@ -12,7 +12,6 @@ public enum CodexUsage {
         }
         struct ResetSummary: Decodable {
             let availableCount: Int?
-            let applicableAvailableCount: Int?
         }
         let email: String?
         let planType: String?
@@ -39,17 +38,17 @@ public enum CodexUsage {
 
     private static func resets(from summary: Response.ResetSummary?) -> ResetCredits? {
         guard let count = summary?.availableCount, count > 0 else { return nil }
-        // `applicable_available_count` sat at 0 beside one held credit while
-        // the windows read 0% and 5% (2026-09-24), so it reads as "usable only
-        // once a limit is hit". Absent, the button stays live — the server
-        // answers `nothing_to_reset` if it disagrees.
-        let usableNow = summary?.applicableAvailableCount.map { $0 > 0 } ?? true
+        // Usable whenever one is held. `applicable_available_count` is not a
+        // gate: it sat at 0 beside a held credit (2026-09-24), and the Codex
+        // CLI offers "Redeem reset" on `available_count` alone without ever
+        // reading it. When there is nothing to reset, the server says so
+        // (`nothing_to_reset`) and the credit stays banked.
         return ResetCredits(
             available: count,
             expiresAt: nil,
             clears: clearedWindows,
-            usableNow: usableNow,
-            blockedReason: usableNow ? nil : "Usable once you hit a limit",
+            usableNow: true,
+            blockedReason: nil,
             claimID: ""
         )
     }

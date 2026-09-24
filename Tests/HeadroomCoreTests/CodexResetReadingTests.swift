@@ -57,12 +57,14 @@ private let creditsBody = Data(#"""
     #expect(try CodexUsage.parse(usageBody(available: 0), fetchedAt: Date()).usage.resets == nil)
 }
 
-/// Seen live: one credit held, none applicable while the windows sat at 0% and
-/// 5%. Assumed to mean "only once a limit is hit".
-@Test func noApplicableCreditMeansNotUsableNow() throws {
+/// Seen live: one credit held, none "applicable" while the windows sat at 0%
+/// and 5%. The Codex CLI offers "Redeem reset" whenever any credit is held and
+/// never reads that field, so neither does this — the server answers
+/// `nothing_to_reset` if it disagrees.
+@Test func theApplicableCountDoesNotGateTheReset() throws {
     let resets = try #require(try CodexUsage.parse(usageBody(available: 1, applicable: 0), fetchedAt: Date()).usage.resets)
-    #expect(resets.usableNow == false)
-    #expect(resets.blockedReason == "Usable once you hit a limit")
+    #expect(resets.usableNow == true)
+    #expect(resets.blockedReason == nil)
 }
 
 /// An older server that does not send the field is not a reason to hide the

@@ -35,8 +35,10 @@ public enum HeadroomConstants {
     public static let anthropicScopes = "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code"
     public static let anthropicBeta = "oauth-2025-04-20"
     /// Without a header that impersonates the CLI, the usage endpoint answers
-    /// with a hard 429.
-    public static let anthropicUserAgent = "claude-cli/2.1.260 (external, cli)"
+    /// with a hard 429. The version matters too: Anthropic withholds the
+    /// banked limit resets from a CLI it considers too old — 2.1.260 got
+    /// `ineligible_reason: "cli_version"` on 2026-09-24, 2.1.281 got the grant.
+    public static let anthropicUserAgent = "claude-cli/2.1.281 (external, cli)"
 
     public static let codexUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     /// The banked limit resets one by one, with their expiry. Asked only when
