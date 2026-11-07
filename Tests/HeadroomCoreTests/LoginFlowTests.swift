@@ -43,9 +43,8 @@ private struct StubOAuth: OAuthProvider {
 }
 
 /// Signing the same account in twice must not produce two entries. The
-/// identity is provider:email and the email comes from the provider, so the
-/// second sign-in cannot help but land on the same identity — it overwrites the
-/// first with fresh tokens.
+/// identity comes entirely from the provider, so the second sign-in cannot help
+/// but land on the same identity — it overwrites the first with fresh tokens.
 @Test func signingInTheSameAccountTwiceStoresOneEntryWithFreshTokens() async throws {
     let store = AccountStore(secrets: InMemorySecretStore())
     let flow = LoginFlow(store: store) { url in
@@ -67,6 +66,64 @@ private struct StubOAuth: OAuthProvider {
     #expect(saved.count == 1)
     #expect(saved[0].email == "same@account.pl")
     #expect(saved[0].accessToken == "second")
+}
+
+/// One address, two organisations: the profile is what tells them apart, so
+/// this has to go through the real flow rather than only the store.
+@Test func signingInToASecondOrganisationKeepsTheFirst() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    let flow = LoginFlow(store: store) { url in
+        Task { _ = try? await URLSession.shared.data(from: url) }
+    }
+
+    let first = try await flow.logIn(
+        provider: .anthropic,
+        providerFactory: { port in StubOAuth(port: port, accessToken: "first") },
+        profileFactory: { _ in
+            AnthropicProfile(
+                email: "same@account.pl", plan: nil,
+                organizationName: "Personal", organizationUUID: "o-1"
+            )
+        }
+    )
+    let second = try await flow.logIn(
+        provider: .anthropic,
+        providerFactory: { port in StubOAuth(port: port, accessToken: "second") },
+        profileFactory: { _ in
+            AnthropicProfile(
+                email: "same@account.pl", plan: nil,
+                organizationName: "Team", organizationUUID: "o-2"
+            )
+        }
+    )
+
+    #expect(first.id != second.id)
+    #expect(try store.load().map(\.accessToken) == ["first", "second"])
+}
+
+/// `AppModel` checks and reports on the account `logIn` hands back, so that has
+/// to be the entry as stored — not the id this sign-in would have made up.
+@Test func aSignInReturnsTheIdentifierItsEntryWasStoredUnder() async throws {
+    let store = AccountStore(secrets: InMemorySecretStore())
+    try store.upsert(Account(provider: .anthropic, email: "same@account.pl", organizationName: "Personal"))
+    let flow = LoginFlow(store: store) { url in
+        Task { _ = try? await URLSession.shared.data(from: url) }
+    }
+
+    let renewed = try await flow.logIn(
+        provider: .anthropic,
+        providerFactory: { port in StubOAuth(port: port) },
+        profileFactory: { _ in
+            AnthropicProfile(
+                email: "same@account.pl", plan: nil,
+                organizationName: "Personal", organizationUUID: "o-1"
+            )
+        }
+    )
+
+    #expect(renewed.id == "anthropic:same@account.pl")
+    #expect(renewed.organizationUUID == "o-1")
+    #expect(try store.load().count == 1)
 }
 
 @Test func aProfileFailureStoresNoAccountWithAnInventedIdentity() async throws {

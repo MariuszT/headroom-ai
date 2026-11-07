@@ -45,6 +45,11 @@ Click the menu bar icon, then **Add account**, and pick a provider. Your browser
 opens; sign in there. There is nothing to type, because the account is
 identified and labelled by the email address its provider reports.
 
+One address in several Claude organisations or Codex workspaces is several
+accounts, each with limits of its own. Add it once for each, picking the one you
+want on the sign-in page. Each gets its own cell, with the organisation's name
+under the address (for Codex, the plan).
+
 Signing in here creates its own token pair. It does **not** touch the accounts
 you are logged into in the `claude` or `codex` CLI, and those logins do not
 touch this app's.

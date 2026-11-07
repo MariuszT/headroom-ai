@@ -103,11 +103,11 @@ public final class LoginFlow: @unchecked Sendable {
             expiresAt: tokens.expiresAt,
             accountId: identity.accountId,
             organizationName: identity.organizationName,
-            hasSubscription: identity.hasSubscription
+            hasSubscription: identity.hasSubscription,
+            organizationUUID: identity.organizationUUID
         )
 
-        try store.upsert(account)
-        return account
+        return try store.upsert(account)
     }
 
     /// Races `listener.waitForCode()` against a timeout instead of awaiting it
@@ -152,6 +152,7 @@ public final class LoginFlow: @unchecked Sendable {
         let accountId: String?
         var organizationName: String? = nil
         var hasSubscription: Bool = false
+        var organizationUUID: String? = nil
     }
 
     /// Codex carries the whole identity in the `id_token`, so there is no extra
@@ -164,9 +165,9 @@ public final class LoginFlow: @unchecked Sendable {
     ///
     /// The same rule now binds Codex: a missing `email` or `chatgpt_account_id`
     /// in the `id_token` used to produce a stand-in `email: "unknown"` — and
-    /// `Account.id` is `provider:email`, so a second such sign-in would
-    /// silently overwrite the first, while usage requests would go out without
-    /// the required `ChatGPT-Account-Id` header.
+    /// with no workspace `Account.id` is just `provider:email`, so a second
+    /// such sign-in would silently overwrite the first, while usage requests
+    /// would go out without the required `ChatGPT-Account-Id` header.
     ///
     /// Not public, but not `private` either, so unit tests (through
     /// `@testable import`) can exercise the identity extraction on its own
@@ -185,7 +186,8 @@ public final class LoginFlow: @unchecked Sendable {
                 plan: profile.plan,
                 accountId: nil,
                 organizationName: profile.organizationName,
-                hasSubscription: profile.hasSubscription
+                hasSubscription: profile.hasSubscription,
+                organizationUUID: profile.organizationUUID
             )
         case .openai:
             let claims = tokens.idToken.map(JWT.claims) ?? [:]

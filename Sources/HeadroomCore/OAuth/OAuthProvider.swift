@@ -40,9 +40,9 @@ public enum OAuthError: Error, Equatable {
     case timedOut
     /// Codex returned neither an email nor an account id
     /// (`chatgpt_account_id`) in the `id_token`. Storing such an account under
-    /// a stand-in identity could silently overwrite another account
-    /// (`Account.id` is `provider:email`) and would send usage requests without
-    /// the required `ChatGPT-Account-Id` header.
+    /// a stand-in identity could silently overwrite another account (with no
+    /// workspace, `Account.id` is just `provider:email`) and would send usage
+    /// requests without the required `ChatGPT-Account-Id` header.
     case incompleteCodexIdentity
 }
 

@@ -259,6 +259,12 @@ final class AppModel {
         MenuBarReading.all(accounts: accounts, usage: usage, metric: menuBarMetric)
     }
 
+    /// See `AccountLabels.displayName` — the logic lives in the core so it can
+    /// be tested without a running app.
+    func displayName(of account: Account) -> String {
+        AccountLabels.displayName(of: account, among: accounts)
+    }
+
     /// See `AccountStore.reload(keeping:)` — the logic lives in the core so it
     /// can be tested without a running app.
     func loadAccounts() {
@@ -323,9 +329,9 @@ final class AppModel {
         resetMessages[id] = nil
         resetAttempts[id] = nil
         // The renewal lives outside the account (see `Preferences.renewal`), so
-        // it does not leave with it — and an id is `provider:email`, which a
-        // later sign-in of the same address would reuse, inheriting a date set
-        // for an account the user deliberately removed.
+        // it does not leave with it — and an id comes from the address and the
+        // workspace, which a later sign-in of the same login would reuse,
+        // inheriting a date set for an account the user deliberately removed.
         setRenewal(nil, for: id)
         loadAccounts()
     }
@@ -355,10 +361,10 @@ final class AppModel {
             let (newUsage, result) = await poller.redeemReset(account: account)
             redeemingResets.remove(id)
             // The account can have been removed while the claim was in the
-            // air — `remove(id:)` already cleared its entries, and an id is
-            // `provider:email`, reusable by a later sign-in of the same
-            // address. Writing here would resurrect state for an account
-            // that is gone, or hand it to whoever signs in next.
+            // air — `remove(id:)` already cleared its entries, and an id comes
+            // from the address and the workspace, reusable by a later sign-in
+            // of the same login. Writing here would resurrect state for an
+            // account that is gone, or hand it to whoever signs in next.
             guard accounts.contains(where: { $0.id == id }) else { return }
             usage[id] = newUsage.keepingStaleness(of: usage[id])
             let message = ResetLine.message(for: result)
@@ -505,9 +511,9 @@ final class AppModel {
         /// Signed in to an account that was not on the list before.
         case added(String)
         /// Signed in again to an account already on the list. Nothing is
-        /// duplicated — the identity is provider:email, so the entry is
-        /// overwritten with fresh tokens — but the user asked for it and
-        /// deserves to be told that is what happened.
+        /// duplicated — `AccountStore.upsert` finds the entry for this
+        /// workspace and overwrites it with fresh tokens — but the user asked
+        /// for it and deserves to be told that is what happened.
         case reconnected(String)
     }
 
@@ -534,9 +540,11 @@ final class AppModel {
                 guard !Task.isCancelled else { return }
                 loadAccounts()
                 await checkImmediately(added)
-                loginState = knownIDs.contains(added.id)
-                    ? .reconnected(added.email)
-                    : .added(added.email)
+                // Named with its workspace when the address alone would not
+                // say which one this sign-in landed on: only the page in the
+                // browser chooses, and this is where the user finds out.
+                let name = displayName(of: added)
+                loginState = knownIDs.contains(added.id) ? .reconnected(name) : .added(name)
             } catch {
                 guard !Task.isCancelled else { return }
                 loginState = .failed(provider, errorDescription(error, provider: provider))
