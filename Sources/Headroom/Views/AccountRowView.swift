@@ -14,6 +14,9 @@ import HeadroomCore
 /// broken data; absence reads as absence.
 struct AccountRowView: View {
     let account: Account
+    /// Which workspace this is, when another cell shares its address. See
+    /// `AccountLabels`.
+    let workspaceLabel: String?
     let usage: AccountUsage?
     /// When this account's plan renews, as the user told us — neither provider
     /// reports it. See `RenewalSchedule`.
@@ -96,6 +99,16 @@ struct AccountRowView: View {
                 .foregroundStyle(.tertiary)
                 .help("Remove \(account.email)")
                 .disabled(confirmingRemoval || confirmingReset)
+            }
+
+            // Above the confirmations, not among the lines they replace: "Remove
+            // it?" under an address connected twice has to say which one.
+            if let workspaceLabel {
+                Text(workspaceLabel)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             if confirmingRemoval {

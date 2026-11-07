@@ -18,7 +18,7 @@ import HeadroomCore
 /// — the OAuth tokens this app holds reach usage and profile endpoints only,
 /// and Anthropic's organisation endpoints refuse them outright.
 struct RenewalEditorView: View {
-    let email: String
+    let accountName: String
     let renewal: RenewalSchedule?
     let save: (RenewalSchedule?) -> Void
     let cancel: () -> Void
@@ -48,12 +48,12 @@ struct RenewalEditorView: View {
     @State private var leadDays: Int
 
     init(
-        email: String,
+        accountName: String,
         renewal: RenewalSchedule?,
         save: @escaping (RenewalSchedule?) -> Void,
         cancel: @escaping () -> Void
     ) {
-        self.email = email
+        self.accountName = accountName
         self.renewal = renewal
         self.save = save
         self.cancel = cancel
@@ -84,7 +84,7 @@ struct RenewalEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Renewal")
                     .font(.system(size: 13, weight: .medium))
-                Text(email)
+                Text(accountName)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

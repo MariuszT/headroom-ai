@@ -18,3 +18,13 @@ import Foundation
     let second = Account(provider: .anthropic, email: "a@b.pl")
     #expect(first.id == second.id)
 }
+
+@Test func twoWorkspacesAtOneAddressHaveDifferentIdentifiers() {
+    let personal = Account(provider: .anthropic, email: "a@b.pl", organizationUUID: "o-1")
+    let team = Account(provider: .anthropic, email: "a@b.pl", organizationUUID: "o-2")
+    #expect(personal.id != team.id)
+
+    let plus = Account(provider: .openai, email: "a@b.pl", accountId: "ws-1")
+    let business = Account(provider: .openai, email: "a@b.pl", accountId: "ws-2")
+    #expect(plus.id != business.id)
+}

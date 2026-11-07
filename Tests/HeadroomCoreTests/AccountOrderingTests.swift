@@ -224,3 +224,18 @@ private func emails(
 @Test func aCachedReadingIsStillJudgedByItsWorstWindow() {
     #expect(usage(20, weekly: 70, staleness: .cached(since: Date())).knownPercent == 70)
 }
+
+/// Two workspaces at one address tie on the address, and what settles that must
+/// not be the order they came in: a manual order hands over dictionary values,
+/// so the two cells could trade places from one launch to the next.
+@Test(arguments: [SortMode.alphabetical, .fullness, .manual])
+func oneAddressInTwoWorkspacesKeepsOneOrder(mode: SortMode) {
+    let first = Account(provider: .anthropic, email: "a@x.pl", organizationUUID: "o-1")
+    let second = Account(provider: .anthropic, email: "a@x.pl", organizationUUID: "o-2")
+
+    let forwards = AccountOrdering.sorted([first, second], usage: [:], mode: mode, manualOrder: [])
+    let backwards = AccountOrdering.sorted([second, first], usage: [:], mode: mode, manualOrder: [])
+
+    #expect(forwards.map(\.id) == [first.id, second.id])
+    #expect(backwards.map(\.id) == [first.id, second.id])
+}

@@ -47,7 +47,7 @@ public enum RenewalReminders {
             }
             return RenewalReminder(
                 accountID: account.id,
-                title: "\(account.email) renews \(countdown(status.leadDays))",
+                title: "\(AccountLabels.displayName(of: account, among: accounts)) renews \(countdown(status.leadDays))",
                 body: "\(account.provider.displayName) — \(dayAndMonth.string(from: status.date))",
                 fireAt: fireAt
             )

@@ -81,3 +81,24 @@ private func account(_ email: String) -> Account {
     #expect(reminder?.title == "a@b.pl renews in 3 days")
     #expect(reminder?.body == "Claude Code — 20 Sep")
 }
+
+/// A notification has no cell around it to say which of two workspaces at one
+/// address is renewing, so its title has to.
+@Test func aReminderNamesTheWorkspaceWhenTheAddressIsShared() {
+    let schedule = RenewalSchedule(anchor: day(2026, 9, 20), cycle: .monthly, leadDays: 3)
+    let personal = Account(
+        provider: .anthropic, email: "a@b.pl", organizationName: "Personal", organizationUUID: "o-1"
+    )
+    let team = Account(
+        provider: .anthropic, email: "a@b.pl", organizationName: "Team", organizationUUID: "o-2"
+    )
+
+    let reminders = RenewalReminders.all(
+        accounts: [personal, team],
+        renewals: [team.id: schedule],
+        now: day(2026, 9, 10),
+        calendar: utc
+    )
+
+    #expect(reminders.first?.title == "a@b.pl (Team) renews in 3 days")
+}

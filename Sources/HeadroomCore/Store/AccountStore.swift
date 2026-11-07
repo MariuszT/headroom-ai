@@ -74,16 +74,57 @@ public struct AccountStore: Sendable {
         }
     }
 
-    public func upsert(_ account: Account) throws {
+    /// Stores a sign-in and returns it as stored. An entry that already holds
+    /// this login keeps its `id`, which can differ from the one `account` came
+    /// in with — so the returned account is the one to go on addressing.
+    @discardableResult
+    public func upsert(_ account: Account) throws -> Account {
+        var stored = account
         try mutate { accounts in
             var accounts = accounts
-            if let index = accounts.firstIndex(where: { $0.id == account.id }) {
-                accounts[index] = account
+            if let index = Self.entry(for: account, in: accounts) {
+                stored.idWorkspace = accounts[index].idWorkspace
+                accounts[index] = stored
             } else {
-                accounts.append(account)
+                accounts.append(stored)
             }
             return accounts
         }
+        return stored
+    }
+
+    /// Which stored entry a sign-in renews, if any.
+    ///
+    /// The same workspace at the same address is the same login. Failing that,
+    /// an entry from before `organizationUUID` was stored has only the
+    /// organisation's name left to go on, and that comparison is the upgrade
+    /// path rather than a corner case: it is what lets the second organisation
+    /// of an address already on the list arrive as a new entry instead of
+    /// overwriting the first. Where there is no name to compare either, nothing
+    /// says these are two logins, and they are treated as one — what every
+    /// sign-in did before.
+    ///
+    /// The exact match is looked for across all of them first: an old entry
+    /// that merely could be this login must not win over one that is.
+    ///
+    /// Last comes whatever already holds the id this sign-in would take: a
+    /// profile reporting a name but no uuid can get that far, and `update` and
+    /// `remove` find entries by id, so no two may ever share one.
+    private static func entry(for signIn: Account, in accounts: [Account]) -> Int? {
+        let sameAddress = accounts.indices.filter {
+            accounts[$0].provider == signIn.provider
+                && accounts[$0].email.lowercased() == signIn.email.lowercased()
+        }
+        return sameAddress.first { accounts[$0].workspace == signIn.workspace }
+            ?? sameAddress.first { index in
+                let stored = accounts[index]
+                guard stored.workspace == nil || signIn.workspace == nil else { return false }
+                guard let storedName = stored.organizationName,
+                      let signInName = signIn.organizationName
+                else { return true }
+                return storedName == signInName
+            }
+            ?? sameAddress.first { accounts[$0].id == signIn.id }
     }
 
     /// Writes an account only if it is still stored, and reports whether it

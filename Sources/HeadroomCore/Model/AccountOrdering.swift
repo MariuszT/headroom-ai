@@ -44,9 +44,22 @@ public enum AccountOrdering {
     }
 
     private static func byAddress(_ accounts: [Account]) -> [Account] {
-        // Case-insensitive: to a reader "Beata" sits between "anna" and
-        // "cezary", and a plain `<` would file every capital ahead of them all.
-        accounts.sorted { $0.email.localizedCaseInsensitiveCompare($1.email) == .orderedAscending }
+        accounts.sorted(by: addressComesFirst)
+    }
+
+    /// Case-insensitive: to a reader "Beata" sits between "anna" and "cezary",
+    /// and a plain `<` would file every capital ahead of them all.
+    ///
+    /// The id settles an address connected through two workspaces. Without it
+    /// those two would come out in whatever order they went in, and `manually`
+    /// hands over dictionary values, so the two cells could trade places
+    /// between one launch and the next.
+    private static func addressComesFirst(_ first: Account, _ second: Account) -> Bool {
+        switch first.email.localizedCaseInsensitiveCompare(second.email) {
+        case .orderedAscending: true
+        case .orderedDescending: false
+        case .orderedSame: first.id < second.id
+        }
     }
 
     /// Accounts with an exhausted window go first — those are the ones that
@@ -64,7 +77,7 @@ public enum AccountOrdering {
             let firstPercent = usage[first.id]?.knownPercent ?? -1
             let secondPercent = usage[second.id]?.knownPercent ?? -1
             return firstPercent == secondPercent
-                ? first.email.localizedCaseInsensitiveCompare(second.email) == .orderedAscending
+                ? addressComesFirst(first, second)
                 : firstPercent > secondPercent
         }
     }

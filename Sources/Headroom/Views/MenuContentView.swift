@@ -152,7 +152,7 @@ struct MenuContentView: View {
                 .onTapGesture { editingRenewalFor = nil }
 
             RenewalEditorView(
-                email: account.email,
+                accountName: model.displayName(of: account),
                 renewal: model.renewals[account.id],
                 save: {
                     model.setRenewal($0, for: account.id)
@@ -287,6 +287,7 @@ struct MenuContentView: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(model.sections, id: \.self) { provider in
                     let group = model.orderedAccounts(for: provider)
+                    let workspaceLabels = AccountLabels.workspaces(in: group)
                     if !group.isEmpty {
                         // Only this section's cells are drop targets. Without
                         // the filter a cell dragged over the OTHER section lit
@@ -301,6 +302,7 @@ struct MenuContentView: View {
                             ForEach(group) { account in
                                 AccountRowView(
                                     account: account,
+                                    workspaceLabel: workspaceLabels[account.id],
                                     usage: model.usage[account.id],
                                     renewal: model.renewals[account.id],
                                     refresh: { model.refreshAccount(id: account.id) },
