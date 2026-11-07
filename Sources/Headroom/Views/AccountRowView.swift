@@ -254,14 +254,15 @@ private struct WindowLine: View {
                 // it onto two lines — at exactly the moment the number matters most.
                 .frame(width: 36, alignment: .trailing)
 
-            if let resetsAt = window.resetsAt {
-                Text(ResetFormatter.string(for: resetsAt))
-                    .font(.system(size: 10).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    // "11 Sep 08:00" measures 66 pt at this size; 56 cut it off.
-                    .frame(width: 70, alignment: .trailing)
-            }
+            // Drawn even with nothing to say. Without it a window with no reset
+            // time hands this column to its bar, and that bar and percentage
+            // stop lining up with the lines around them.
+            Text(window.resetsAt.map { ResetFormatter.string(for: $0) } ?? "")
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                // "11 Sep 08:00" measures 66 pt at this size; 56 cut it off.
+                .frame(width: 70, alignment: .trailing)
         }
     }
 
