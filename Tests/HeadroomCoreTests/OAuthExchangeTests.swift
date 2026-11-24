@@ -73,6 +73,29 @@ extension NetworkTests {
             }
         }
 
+        // OpenAI does not answer a dead refresh token with the standard
+        // `"error":"invalid_grant"` string — it sends an object with its own
+        // code. Read as "some 401", the account backed off forever under a
+        // stale number and never said it had to be signed in again.
+        @Test(arguments: ["refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"])
+        func openAIsDeadRefreshTokenCodesAreAnInvalidGrant(code: String) async {
+            MockProtocol.response = (401, Data(#"""
+            {"error":{"message":"Please try signing in again.","type":"invalid_request_error","param":null,"code":"\#(code)"}}
+            """#.utf8))
+            await #expect(throws: OAuthError.invalidGrant) {
+                _ = try await OpenAIOAuth(session: mockOAuthSession()).refresh(refreshToken: "X")
+            }
+        }
+
+        @Test func anUnrelatedErrorObjectStillGivesAnHttpError() async {
+            MockProtocol.response = (401, Data(#"""
+            {"error":{"message":"Nope.","type":"invalid_request_error","code":"invalid_client"}}
+            """#.utf8))
+            await #expect(throws: OAuthError.http(401)) {
+                _ = try await OpenAIOAuth(session: mockOAuthSession()).refresh(refreshToken: "X")
+            }
+        }
+
         @Test func a401WithNoErrorBodyGivesAnHttpError() async {
             MockProtocol.response = (401, Data())
             await #expect(throws: OAuthError.http(401)) {

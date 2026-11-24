@@ -176,7 +176,7 @@ public actor Poller {
             flagged.needsReauth = true
             try? store.update(flagged)
             await increaseBackoff(account.id)
-            return await lastValueOr(account: account, description: "Rejected by the provider. Add this account again to renew it.")
+            return await lastValueOr(account: account, description: "Rejected by the provider. Sign in again to renew it.")
         } catch {
             await increaseBackoff(account.id)
             return await lastValueOr(account: account, description: "No connection.")
@@ -255,7 +255,7 @@ public actor Poller {
         } catch OAuthError.invalidGrant {
             current.needsReauth = true
             try? store.update(current)
-            return .failed(await lastValueOr(account: account, description: "Rejected by the provider. Add this account again to renew it."))
+            return .failed(await lastValueOr(account: account, description: "Rejected by the provider. Sign in again to renew it."))
         } catch {
             await increaseBackoff(account.id)
             return .failed(await lastValueOr(account: account, description: "Could not renew the token."))
@@ -365,7 +365,7 @@ public actor Poller {
             // the token: a permission this one endpoint refuses is not the same
             // as a dead token, and usage reading can still work fine. Flagging
             // `needsReauth` here would hide a working account's bars behind
-            // "Add this account again" for no reason; the next usage read is
+            // "Sign in again" for no reason; the next usage read is
             // what actually knows whether the token is good, so it is left to
             // decide, and nothing is written to the store here.
             return (await currentReading(account), .failed)

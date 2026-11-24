@@ -13,7 +13,7 @@ public enum AccountNote {
         // on a rejection from EITHER provider, so a Codex account turned away
         // by chatgpt.com used to be told that Anthropic had refused it.
         if account.needsReauth {
-            return "Rejected by \(account.provider.displayName). Add this account again to renew it."
+            return "Rejected by \(account.provider.displayName). Sign in again to renew it."
         }
         guard let usage else { return "Waiting for the first check." }
         if case .error(let description) = usage.staleness { return description }

@@ -32,7 +32,7 @@ private func usage(
 
 @Test func aRejectedAccountNamesItsOwnProvider() {
     #expect(AccountNote.text(for: account(needsReauth: true, provider: .openai), usage: usage())
-        == "Rejected by Codex. Add this account again to renew it.")
+        == "Rejected by Codex. Sign in again to renew it.")
 }
 
 @Test func anErrorSpeaksInTheWordsItCameWith() {

@@ -59,10 +59,34 @@ struct TokenResponse: Decodable {
     let refreshToken: String?
     let idToken: String?
     let expiresIn: Double?
-    let error: String?
+    let error: Failure?
+
+    /// The two shapes an error arrives in. The OAuth standard — and Anthropic —
+    /// send a bare string (`"error":"invalid_grant"`); OpenAI sends an object
+    /// whose `code` carries the reason. Decoding only the string made the
+    /// whole response undecodable whenever OpenAI refused a token.
+    struct Failure: Decodable {
+        let code: String?
+
+        init(from decoder: Decoder) throws {
+            if let plain = try? decoder.singleValueContainer().decode(String.self) {
+                code = plain
+                return
+            }
+            struct Detailed: Decodable { let code: String? }
+            code = try Detailed(from: decoder).code
+        }
+    }
 }
 
 enum TokenExchange {
+    static let deadGrantCodes: Set<String> = [
+        "invalid_grant",
+        "refresh_token_reused",
+        "refresh_token_expired",
+        "refresh_token_invalidated",
+    ]
+
     /// The single place where `invalid_grant` is decided — for both providers
     /// it means the same thing: this account has to be signed in again.
     static func perform(
@@ -88,7 +112,14 @@ enum TokenExchange {
         // 400 or a 401, which across eleven Codex accounts meant eleven
         // pointless browser sign-ins that all ended the same way, instead
         // of the ordinary backoff path.
-        if result?.error == "invalid_grant" { throw OAuthError.invalidGrant }
+        //
+        // OpenAI names the same situation differently: a refresh token that
+        // was spent, ran out or was revoked comes back as one of its own
+        // codes under a 401. Each is as final as `invalid_grant` — retrying
+        // with that token can never work.
+        if let code = result?.error?.code, Self.deadGrantCodes.contains(code) {
+            throw OAuthError.invalidGrant
+        }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw OAuthError.http(http.statusCode)
         }

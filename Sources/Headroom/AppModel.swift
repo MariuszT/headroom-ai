@@ -509,6 +509,12 @@ final class AppModel {
         /// overwritten with fresh tokens — but the user asked for it and
         /// deserves to be told that is what happened.
         case reconnected(String)
+        /// A row's "sign in" was pressed for one account, but the browser came
+        /// back signed in to another. Nothing is lost or doubled — the account
+        /// that did sign in has fresh tokens under its own entry — but the one
+        /// that was asked for still needs signing in, and saying only
+        /// "reconnected" would hide that.
+        case signedInOther(signedIn: String, wanted: String)
     }
 
     private(set) var loginState: LoginState = .idle
@@ -521,7 +527,11 @@ final class AppModel {
     /// interrupt it: that is the only way an abandoned sign-in releases the
     /// `CallbackListener` instead of holding it — and, for Codex, port 1455 —
     /// for the life of the process.
-    func startLogin(provider: Provider) {
+    ///
+    /// `expecting` is the account whose row asked for the sign-in, if one did.
+    /// The browser decides which account actually signs in, not the app, so
+    /// it is only used afterwards — to say so when the two differ.
+    func startLogin(provider: Provider, expecting: Account? = nil) {
         loginTask?.cancel()
         loginState = .running(provider)
         let knownIDs = Set(accounts.map(\.id))
@@ -534,9 +544,13 @@ final class AppModel {
                 guard !Task.isCancelled else { return }
                 loadAccounts()
                 await checkImmediately(added)
-                loginState = knownIDs.contains(added.id)
-                    ? .reconnected(added.email)
-                    : .added(added.email)
+                if let expecting, expecting.id != added.id {
+                    loginState = .signedInOther(signedIn: added.email, wanted: expecting.email)
+                } else {
+                    loginState = knownIDs.contains(added.id)
+                        ? .reconnected(added.email)
+                        : .added(added.email)
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 loginState = .failed(provider, errorDescription(error, provider: provider))

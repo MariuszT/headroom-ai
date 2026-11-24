@@ -205,7 +205,7 @@ private func waitUntil(_ condition: @escaping () async -> Bool) async {
 /// The claim endpoint sits outside `/api/oauth/` and is undocumented — its
 /// 401/403 says nothing reliable about the token, unlike the usage endpoint's.
 /// Flagging `needsReauth` here would hide a perfectly working account behind
-/// "Add this account again"; the next usage read is what actually decides.
+/// "Sign in again"; the next usage read is what actually decides.
 @Test func aRejectionOfTheClaimDoesNotAskForASignIn() async throws {
     let account = claudeAccount()
     let (poller, store) = try await makePoller(account, redeemer: StubRedeemer(.failure(UsageError.unauthorized)))

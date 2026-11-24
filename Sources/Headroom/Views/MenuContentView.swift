@@ -246,6 +246,14 @@ struct MenuContentView: View {
                 Button("Dismiss") { model.dismissLoginState() }
                     .buttonStyle(.borderless)
             }
+        case .signedInOther(let signedIn, let wanted):
+            bannerRow(
+                text: "The browser signed in as \(signedIn), not \(wanted). \(signedIn) is connected; \(wanted) still needs signing in — switch accounts in the browser and try again.",
+                tint: .orange
+            ) {
+                Button("Dismiss") { model.dismissLoginState() }
+                    .buttonStyle(.borderless)
+            }
         }
     }
 
@@ -305,6 +313,8 @@ struct MenuContentView: View {
                                     renewal: model.renewals[account.id],
                                     refresh: { model.refreshAccount(id: account.id) },
                                     remove: { model.remove(id: account.id) },
+                                    signIn: { model.startLogin(provider: account.provider, expecting: account) },
+                                    isSigningIn: isSigningIn,
                                     editRenewal: { editingRenewalFor = account.id },
                                     resetMessage: model.resetMessages[account.id],
                                     isRedeemingReset: model.redeemingResets.contains(account.id),

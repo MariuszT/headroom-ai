@@ -20,6 +20,12 @@ struct AccountRowView: View {
     let renewal: RenewalSchedule?
     let refresh: () -> Void
     let remove: () -> Void
+    /// Signs this account in again through the browser. The entry is keyed by
+    /// provider and email, so the fresh tokens land on this same row — there
+    /// is nothing to remove first.
+    let signIn: () -> Void
+    /// One sign-in at a time: a second would cancel the first mid-browser.
+    let isSigningIn: Bool
     /// Opens the renewal editor, which is drawn over the panel rather than
     /// inside this cell — see `MenuContentView.renewalEditor`.
     let editRenewal: () -> Void
@@ -48,9 +54,14 @@ struct AccountRowView: View {
                 Spacer(minLength: 4)
 
                 if account.needsReauth {
-                    Text("sign in")
+                    // A button, not a label: it reads as something to press,
+                    // and for a while pressing it did nothing.
+                    Button("sign in", action: signIn)
+                        .buttonStyle(.borderless)
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
+                        .help("Sign in to \(account.email) again in your browser")
+                        .disabled(isSigningIn || confirmingRemoval || confirmingReset)
                 }
 
                 if let resets {
